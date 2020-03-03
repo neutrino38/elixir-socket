@@ -10,7 +10,7 @@ Installation
 --------
 In your `mix.exs` file
 
-```
+```elixir
 defp deps do
   [
     # ...
