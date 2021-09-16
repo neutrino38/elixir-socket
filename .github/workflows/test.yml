@@ -2,20 +2,25 @@ name: "Test"
 on: ["push", "pull_request"]
 
 jobs:
-  test_and_build:
-    name: "Compile & Lint"
-    runs-on: "ubuntu-latest"
+  test:
+    runs-on: ubuntu-latest
+    name: OTP ${{ matrix.otp }} / Elixir ${{ matrix.elixir }}
+    strategy:
+      matrix:
+        otp: ["22.3", "23.3", "24.3"]
+        elixir: ["1.10.4", "1.11.3", "1.12.3", "1.13.3"]
     steps:
-    - name: Setup elixir
-      uses: erlef/setup-beam@v1
-      with:
-        otp-version: 24.3.3
-        elixir-version: 1.13.4
+      - uses: actions/checkout@v2
 
-    - uses: actions/checkout@v1
-    - run: |
-        mix deps.get
-        mix compile --warnings-as-errors
-        mix format --check-formatted
-        # mix credo
-        mix test
+      - uses: erlef/setup-elixir@v1
+        name: Setup elixir
+        with:
+          otp-version: ${{matrix.otp}}
+          elixir-version: ${{matrix.elixir}}
+
+      - run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+          mix format --check-formatted
+          # mix credo
+          mix test
