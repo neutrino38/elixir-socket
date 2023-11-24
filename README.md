@@ -1,4 +1,4 @@
-Elixir sockets made decent 
+Elixir sockets made decent ![Build](https://github.com/dominicletz/elixir-socket2/actions/workflows/test.yml/badge.svg)
 ==========================
 This library wraps `gen_tcp`, `gen_udp` and `gen_sctp`, `ssl` and implements
 websockets and socks.
