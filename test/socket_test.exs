@@ -2,7 +2,7 @@ defmodule SocketTest do
   use ExUnit.Case
 
   test "connect" do
-    server = Task.start_link(fn -> server(12_345) end)
+    Task.start_link(fn -> server(12_345) end)
 
     socket = Socket.Web.connect!("localhost", 12_345)
     socket |> Socket.Web.send!({:text, "test"})
@@ -16,19 +16,17 @@ defmodule SocketTest do
   # end
 
   test "connect path" do
-    server = Task.start_link(fn -> server(12_346) end)
-
+    Task.start_link(fn -> server(12_346) end)
     socket = Socket.Web.connect!("localhost", 12_346, path: "/websocket")
     socket |> Socket.Web.send!({:text, "test"})
     assert socket |> Socket.Web.recv!() == {:text, "test"}
   end
 
   test "connect ping" do
-    server = Task.start_link(fn -> server(1234) end)
+    Task.start_link(fn -> server(1234) end)
 
     socket = Socket.Web.connect!("localhost", 1234)
     socket |> Socket.Web.send!({:ping, "test"})
-
     assert socket |> Socket.Web.recv!() == {:pong, "test"}
   end
 
