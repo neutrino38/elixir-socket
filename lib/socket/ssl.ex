@@ -70,7 +70,7 @@ defmodule Socket.SSL do
   @spec error(term) :: String.t()
   def error(code) do
     case :ssl.format_error(code) do
-      'Unexpected error:' ++ _ ->
+      ~c"Unexpected error:" ++ _ ->
         nil
 
       message ->
