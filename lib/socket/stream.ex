@@ -10,38 +10,38 @@ defprotocol Socket.Stream.Protocol do
   @doc """
   Send data through the socket.
   """
-  @spec send(t, iodata) :: :ok | { :error, term }
+  @spec send(t, iodata) :: :ok | {:error, term}
   def send(self, data)
 
   @doc """
   Send a file through the socket, using non-copying operations where available.
   """
-  @spec file(t, String.t)            :: :ok | { :error, term }
-  @spec file(t, String.t, Keyword.t) :: :ok | { :error, term }
+  @spec file(t, String.t()) :: :ok | {:error, term}
+  @spec file(t, String.t(), Keyword.t()) :: :ok | {:error, term}
   def file(self, path, options \\ [])
 
   @doc """
   Receive data from the socket compatible with the packet type.
   """
-  @spec recv(t) :: { :ok, term } | { :error, term }
+  @spec recv(t) :: {:ok, term} | {:error, term}
   def recv(self)
 
   @doc """
   Receive data from the socket with the given length or options.
   """
-  @spec recv(t, non_neg_integer | Keyword.t) :: { :ok, term } | { :error, term }
+  @spec recv(t, non_neg_integer | Keyword.t()) :: {:ok, term} | {:error, term}
   def recv(self, length_or_options)
 
   @doc """
   Receive data from the socket with the given length and options.
   """
-  @spec recv(t, non_neg_integer, Keyword.t) :: { :ok, term } | { :error, term }
+  @spec recv(t, non_neg_integer, Keyword.t()) :: {:ok, term} | {:error, term}
   def recv(self, length, options)
 
   @doc """
   Shutdown the socket in the given mode, either `:both`, `:read`, or `:write`.
   """
-  @spec shutdown(t, :both | :read | :write) :: :ok | { :error, term }
+  @spec shutdown(t, :both | :read | :write) :: :ok | {:error, term}
   def shutdown(self, how \\ :both)
 
   @doc """
@@ -49,37 +49,36 @@ defprotocol Socket.Stream.Protocol do
   """
   @spec close(t) :: :ok | {:error, term}
   def close(self)
-
 end
 
 defmodule Socket.Stream do
-  @type t :: Socket.Stream.Protocol.t
+  @type t :: Socket.Stream.Protocol.t()
 
   use Socket.Helpers
   import Kernel, except: [send: 2]
 
   defdelegate send(self, data), to: Socket.Stream.Protocol
-  defbang     send(self, data), to: Socket.Stream.Protocol
+  defbang(send(self, data), to: Socket.Stream.Protocol)
 
   defdelegate file(self, path), to: Socket.Stream.Protocol
-  defbang     file(self, path), to: Socket.Stream.Protocol
+  defbang(file(self, path), to: Socket.Stream.Protocol)
   defdelegate file(self, path, options), to: Socket.Stream.Protocol
-  defbang     file(self, path, options), to: Socket.Stream.Protocol
+  defbang(file(self, path, options), to: Socket.Stream.Protocol)
 
   defdelegate recv(self), to: Socket.Stream.Protocol
-  defbang     recv(self), to: Socket.Stream.Protocol
+  defbang(recv(self), to: Socket.Stream.Protocol)
   defdelegate recv(self, length_or_options), to: Socket.Stream.Protocol
-  defbang     recv(self, length_or_options), to: Socket.Stream.Protocol
+  defbang(recv(self, length_or_options), to: Socket.Stream.Protocol)
   defdelegate recv(self, length, options), to: Socket.Stream.Protocol
-  defbang     recv(self, length, options), to: Socket.Stream.Protocol
+  defbang(recv(self, length, options), to: Socket.Stream.Protocol)
 
   defdelegate shutdown(self), to: Socket.Stream.Protocol
-  defbang     shutdown(self), to: Socket.Stream.Protocol
+  defbang(shutdown(self), to: Socket.Stream.Protocol)
   defdelegate shutdown(self, how), to: Socket.Stream.Protocol
-  defbang     shutdown(self, how), to: Socket.Stream.Protocol
+  defbang(shutdown(self, how), to: Socket.Stream.Protocol)
 
   defdelegate close(self), to: Socket.Stream.Protocol
-  defbang     close(self), to: Socket.Stream.Protocol
+  defbang(close(self), to: Socket.Stream.Protocol)
 
   @doc """
   Read from the IO device and send to the socket following the given options.
@@ -93,16 +92,16 @@ defmodule Socket.Stream do
     - `:chunk_size` is the size of the chunks read from the IO device at a time
 
   """
-  @spec io(t, :io.device)            :: :ok | { :error, term }
-  @spec io(t, :io.device, Keyword.t) :: :ok | { :error, term }
+  @spec io(t, :io.device()) :: :ok | {:error, term}
+  @spec io(t, :io.device(), Keyword.t()) :: :ok | {:error, term}
   def io(self, io, options \\ []) do
     if offset = options[:offset] do
       case IO.binread(io, offset) do
         :eof ->
           :ok
 
-        { :error, reason } ->
-          { :error, reason }
+        {:error, reason} ->
+          {:error, reason}
 
         _ ->
           io(0, self, io, options[:size] || -1, options[:chunk_size] || 4096)
@@ -117,8 +116,8 @@ defmodule Socket.Stream do
       :eof ->
         :ok
 
-      { :error, reason } ->
-        { :error, reason }
+      {:error, reason} ->
+        {:error, reason}
 
       data ->
         self |> send(data)
@@ -130,8 +129,8 @@ defmodule Socket.Stream do
       :eof ->
         :ok
 
-      { :error, reason } ->
-        { :error, reason }
+      {:error, reason} ->
+        {:error, reason}
 
       data ->
         self |> send(data)
@@ -140,8 +139,8 @@ defmodule Socket.Stream do
     end
   end
 
-  defbang io(self, io)
-  defbang io(self, io, options)
+  defbang(io(self, io))
+  defbang(io(self, io, options))
 end
 
 defimpl Socket.Stream.Protocol, for: Port do
@@ -152,7 +151,9 @@ defimpl Socket.Stream.Protocol, for: Port do
   def file(self, path, options \\ []) do
     cond do
       options[:size] && options[:chunk_size] ->
-        :file.sendfile(path, self, options[:offset] || 0, options[:size], chunk_size: options[:chunk_size])
+        :file.sendfile(path, self, options[:offset] || 0, options[:size],
+          chunk_size: options[:chunk_size]
+        )
 
       options[:size] ->
         :file.sendfile(path, self, options[:offset] || 0, options[:size], [])
@@ -178,23 +179,26 @@ defimpl Socket.Stream.Protocol, for: Port do
     timeout = options[:timeout] || :infinity
 
     case :gen_tcp.recv(self, length, timeout) do
-      { :ok, _ } = ok ->
+      {:ok, _} = ok ->
         ok
 
-      { :error, :closed } ->
-        { :ok, nil }
+      {:error, :closed} ->
+        {:ok, nil}
 
-      { :error, reason } ->
-        { :error, reason }
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   def shutdown(self, how \\ :both) do
-    :gen_tcp.shutdown(self, case how do
-      :read  -> :read
-      :write -> :write
-      :both  -> :read_write
-    end)
+    :gen_tcp.shutdown(
+      self,
+      case how do
+        :read -> :read
+        :write -> :write
+        :both -> :read_write
+      end
+    )
   end
 
   def close(self) do
@@ -227,15 +231,19 @@ defimpl Socket.Stream.Protocol, for: Tuple do
   end
 
   defp file(self, path, offset, size, chunk_size) when path |> is_binary do
-    case File.open!(path, [:read], &Socket.Stream.io(self, &1, offset: offset, size: size, chunk_size: chunk_size)) do
-      { :ok, :ok } ->
+    case File.open!(
+           path,
+           [:read],
+           &Socket.Stream.io(self, &1, offset: offset, size: size, chunk_size: chunk_size)
+         ) do
+      {:ok, :ok} ->
         :ok
 
-      { :ok, { :error, reason } } ->
-        { :error, reason }
+      {:ok, {:error, reason}} ->
+        {:error, reason}
 
-      { :error, reason } ->
-        { :error, reason }
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -255,23 +263,26 @@ defimpl Socket.Stream.Protocol, for: Tuple do
     timeout = options[:timeout] || :infinity
 
     case :ssl.recv(self, length, timeout) do
-      { :ok, _ } = ok ->
+      {:ok, _} = ok ->
         ok
 
-      { :error, :closed } ->
-        { :ok, nil }
+      {:error, :closed} ->
+        {:ok, nil}
 
-      { :error, reason } ->
-        { :error, reason }
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   def shutdown(self, how \\ :both) do
-    :ssl.shutdown(self, case how do
-      :read  -> :read
-      :write -> :write
-      :both  -> :read_write
-    end)
+    :ssl.shutdown(
+      self,
+      case how do
+        :read -> :read
+        :write -> :write
+        :both -> :read_write
+      end
+    )
   end
 
   def close(self) do

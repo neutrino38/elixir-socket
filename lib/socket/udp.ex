@@ -40,7 +40,7 @@ defmodule Socket.UDP do
   Create a UDP socket listening on an OS chosen port, use `local` to know the
   port it was bound on.
   """
-  @spec open :: { :ok, t } | { :error, Error.t }
+  @spec open :: {:ok, t} | {:error, Error.t()}
   def open do
     open(0, [])
   end
@@ -50,12 +50,12 @@ defmodule Socket.UDP do
   port it was bound on, raising if an error occurs.
   """
   @spec open! :: t | no_return
-  defbang open
+  defbang(open)
 
   @doc """
   Create a UDP socket listening on the given port or using the given options.
   """
-  @spec open(:inet.port_number | Keyword.t) :: { :ok, t } | { :error, Error.t }
+  @spec open(:inet.port_number() | Keyword.t()) :: {:ok, t} | {:error, Error.t()}
   def open(port) when port |> is_integer do
     open(port, [])
   end
@@ -68,13 +68,13 @@ defmodule Socket.UDP do
   Create a UDP socket listening on the given port or using the given options,
   raising if an error occurs.
   """
-  @spec open!(:inet.port_number | Keyword.t) :: t | no_return
-  defbang open(port_or_options)
+  @spec open!(:inet.port_number() | Keyword.t()) :: t | no_return
+  defbang(open(port_or_options))
 
   @doc """
   Create a UDP socket listening on the given port and using the given options.
   """
-  @spec open(:inet.port_number, Keyword.t) :: { :ok, t } | { :error, Error.t }
+  @spec open(:inet.port_number(), Keyword.t()) :: {:ok, t} | {:error, Error.t()}
   def open(port, options) do
     options = Keyword.put_new(options, :mode, :passive)
 
@@ -85,13 +85,13 @@ defmodule Socket.UDP do
   Create a UDP socket listening on the given port and using the given options,
   raising if an error occurs.
   """
-  @spec open!(:inet.port_number, Keyword.t) :: t | no_return
-  defbang open(port, options)
+  @spec open!(:inet.port_number(), Keyword.t()) :: t | no_return
+  defbang(open(port, options))
 
   @doc """
   Set the process which will receive the messages.
   """
-  @spec process(t | port, pid) :: :ok | { :error, :closed | :not_owner | Error.t }
+  @spec process(t | port, pid) :: :ok | {:error, :closed | :not_owner | Error.t()}
   def process(socket, pid) when socket |> is_port do
     :gen_udp.controlling_process(socket, pid)
   end
@@ -119,7 +119,7 @@ defmodule Socket.UDP do
   @doc """
   Set options of the socket.
   """
-  @spec options(t, Keyword.t) :: :ok | { :error, Error.t }
+  @spec options(t, Keyword.t()) :: :ok | {:error, Error.t()}
   def options(socket, opts) when socket |> is_port do
     :inet.setopts(socket, arguments(opts))
   end
@@ -127,65 +127,68 @@ defmodule Socket.UDP do
   @doc """
   Convert UDP options to `:inet.setopts` compatible arguments.
   """
-  @spec arguments(Keyword.t) :: list
+  @spec arguments(Keyword.t()) :: list
   def arguments(options) do
-    options = options
+    options =
+      options
       |> Keyword.put_new(:as, :binary)
 
-    options = Enum.group_by(options, fn
-      { :as, _ }         -> true
-      { :local, _ }      -> true
-      { :version, _ }    -> true
-      { :broadcast, _ }  -> true
-      { :multicast, _ }  -> true
-      { :membership, _ } -> true
-      _                  -> false
-    end)
+    options =
+      Enum.group_by(options, fn
+        {:as, _} -> true
+        {:local, _} -> true
+        {:version, _} -> true
+        {:broadcast, _} -> true
+        {:multicast, _} -> true
+        {:membership, _} -> true
+        _ -> false
+      end)
 
-    { local, global } = {
+    {local, global} = {
       Map.get(options, true, []),
       Map.get(options, false, [])
     }
 
-    Socket.arguments(global) ++ Enum.flat_map(local, fn
-      { :as, :binary } ->
-        [:binary]
+    Socket.arguments(global) ++
+      Enum.flat_map(local, fn
+        {:as, :binary} ->
+          [:binary]
 
-      { :as, :list } ->
-        [:list]
+        {:as, :list} ->
+          [:list]
 
-      { :local, options } ->
-        Enum.flat_map(options, fn
-          { :address, address } ->
-            [{ :ip, Socket.Address.parse(address) }]
+        {:local, options} ->
+          Enum.flat_map(options, fn
+            {:address, address} ->
+              [{:ip, Socket.Address.parse(address)}]
 
-          { :fd, fd } ->
-            [{ :fd, fd }]
-        end)
+            {:fd, fd} ->
+              [{:fd, fd}]
+          end)
 
-      { :version, 4 } ->
-        [:inet]
+        {:version, 4} ->
+          [:inet]
 
-      { :version, 6 } ->
-        [:inet6]
+        {:version, 6} ->
+          [:inet6]
 
-      { :broadcast, broadcast } ->
-        [{ :broadcast, broadcast }]
+        {:broadcast, broadcast} ->
+          [{:broadcast, broadcast}]
 
-      { :multicast, options } ->
-        Enum.flat_map(options, fn
-          { :address, address } ->
-            [{ :multicast_if, Socket.Address.parse(address) }]
+        {:multicast, options} ->
+          Enum.flat_map(options, fn
+            {:address, address} ->
+              [{:multicast_if, Socket.Address.parse(address)}]
 
-          { :loop, loop } ->
-            [{ :multicast_loop, loop }]
+            {:loop, loop} ->
+              [{:multicast_loop, loop}]
 
-          { :ttl, ttl } ->
-            [{ :multicast_ttl, ttl }]
-        end)
+            {:ttl, ttl} ->
+              [{:multicast_ttl, ttl}]
+          end)
 
-      { :membership, membership } ->
-        [{ :add_membership, membership }]
-    end)
+        {:membership, membership} ->
+          [{:add_membership, membership}]
+      end)
   end
 end

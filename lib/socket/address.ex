@@ -9,22 +9,22 @@
 defmodule Socket.Address do
   require Bitwise
 
-  @type t :: String.t | charlist | :inet.ip_address
+  @type t :: String.t() | charlist | :inet.ip_address()
 
   @doc """
   Parse a string to an ip address tuple.
   """
-  @spec parse(t) :: :inet.ip_address
+  @spec parse(t) :: :inet.ip_address()
   def parse(text) when text |> is_binary do
     parse(String.to_charlist(text))
   end
 
   def parse(text) when text |> is_list do
     case :inet.parse_address(text) do
-      { :ok, ip } ->
+      {:ok, ip} ->
         ip
 
-      { :error, :einval } ->
+      {:error, :einval} ->
         nil
     end
   end
@@ -44,23 +44,23 @@ defmodule Socket.Address do
   @doc """
   Convert an ip address tuple to a string.
   """
-  @spec to_string(t) :: String.t
+  @spec to_string(t) :: String.t()
   def to_string(address) when address |> is_binary do
     address
   end
 
   def to_string(address) when address |> is_list do
-    address |> IO.iodata_to_binary
+    address |> IO.iodata_to_binary()
   end
 
   def to_string(address) do
-    :inet.ntoa(address) |> IO.iodata_to_binary
+    :inet.ntoa(address) |> IO.iodata_to_binary()
   end
 
   @doc """
   Get the addresses for the given host.
   """
-  @spec for(t, :inet.address_family) :: { :ok, [t] } | { :error, :inet.posix }
+  @spec for(t, :inet.address_family()) :: {:ok, [t]} | {:error, :inet.posix()}
   def for(host, family) do
     :inet.getaddrs(parse(host), family)
   end
@@ -68,13 +68,13 @@ defmodule Socket.Address do
   @doc """
   Get the addresses for the given host, raising if an error occurs.
   """
-  @spec for!(t, :inet.address_family) :: [t] | no_return
+  @spec for!(t, :inet.address_family()) :: [t] | no_return
   def for!(host, family) do
     case :inet.getaddrs(parse(host), family) do
-      { :ok, addresses } ->
+      {:ok, addresses} ->
         addresses
 
-      { :error, code } ->
+      {:error, code} ->
         raise Socket.Error, reason: code
     end
   end
@@ -83,7 +83,8 @@ defmodule Socket.Address do
   Check if an IP address belong to a network
   """
   @spec is_in_subnet?(t, t, Integer) :: boolean
-  def is_in_subnet?(addr, net, netsize) when netsize |> is_integer and netsize >= 1 and netsize <= 128 do
+  def is_in_subnet?(addr, net, netsize)
+      when netsize |> is_integer and netsize >= 1 and netsize <= 128 do
     is_ip_in_subnet(net, netsize, addr)
   end
 
@@ -92,7 +93,7 @@ defmodule Socket.Address do
       netsize >= 8 ->
         addrpart
 
-      netsize in 1 .. 7 ->
+      netsize in 1..7 ->
         case netsize do
           1 -> Bitwise.band(addrpart, 0x80)
           2 -> Bitwise.band(addrpart, 0xC0)
@@ -108,22 +109,22 @@ defmodule Socket.Address do
     end
   end
 
-  defp maskv6(addrpart, netsize ) when is_integer(addrpart) and is_integer(netsize) do
+  defp maskv6(addrpart, netsize) when is_integer(addrpart) and is_integer(netsize) do
     cond do
       netsize >= 16 ->
         addrpart
 
-      netsize in 1 .. 15 ->
+      netsize in 1..15 ->
         case netsize do
-          1  -> Bitwise.band(addrpart, 0x8000)
-          2  -> Bitwise.band(addrpart, 0xC000)
-          3  -> Bitwise.band(addrpart, 0xE000)
-          4  -> Bitwise.band(addrpart, 0xF000)
-          5  -> Bitwise.band(addrpart, 0xF800)
-          6  -> Bitwise.band(addrpart, 0xFC00)
-          7  -> Bitwise.band(addrpart, 0xFE00)
-          8  -> Bitwise.band(addrpart, 0xFF00)
-          9  -> Bitwise.band(addrpart, 0xFF80)
+          1 -> Bitwise.band(addrpart, 0x8000)
+          2 -> Bitwise.band(addrpart, 0xC000)
+          3 -> Bitwise.band(addrpart, 0xE000)
+          4 -> Bitwise.band(addrpart, 0xF000)
+          5 -> Bitwise.band(addrpart, 0xF800)
+          6 -> Bitwise.band(addrpart, 0xFC00)
+          7 -> Bitwise.band(addrpart, 0xFE00)
+          8 -> Bitwise.band(addrpart, 0xFF00)
+          9 -> Bitwise.band(addrpart, 0xFF80)
           10 -> Bitwise.band(addrpart, 0xFFC0)
           11 -> Bitwise.band(addrpart, 0xFFE0)
           12 -> Bitwise.band(addrpart, 0xFFF0)
@@ -138,7 +139,7 @@ defmodule Socket.Address do
   end
 
   # for IP V4
-  defp is_ip_in_subnet({ net1, net2, net3, net4 }, netsize, { addr1, addr2, addr3, addr4 }) do
+  defp is_ip_in_subnet({net1, net2, net3, net4}, netsize, {addr1, addr2, addr3, addr4}) do
     addr = {
       maskv4(addr1, netsize),
       maskv4(addr2, netsize - 8),
@@ -157,7 +158,11 @@ defmodule Socket.Address do
   end
 
   # for IP V6
-  defp is_ip_in_subnet({ net1, net2, net3, net4, net5, net6, net7, net8 }, netsize, { addr1, addr2, addr3, addr4, addr5, addr6, addr7, addr8 }) do
+  defp is_ip_in_subnet(
+         {net1, net2, net3, net4, net5, net6, net7, net8},
+         netsize,
+         {addr1, addr2, addr3, addr4, addr5, addr6, addr7, addr8}
+       ) do
     addr = {
       maskv6(addr1, netsize),
       maskv6(addr2, netsize - 16),
