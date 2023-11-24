@@ -357,7 +357,7 @@ defmodule Socket.SSL do
         {:identity, _} -> true
         {:versions, _} -> true
         {:alert, _} -> true
-        {:ibernate, _} -> true
+        {:hibernate, _} -> true
         {:session, _} -> true
         {:advertised_protocols, _} -> true
         {:preferred_protocols, _} -> true
