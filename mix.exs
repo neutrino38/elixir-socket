@@ -13,11 +13,12 @@ defmodule Socket.Mixfile do
 
   # Configuration for the OTP application
   def application do
-    [applications: [:crypto, :ssl]]
+    [applications: [:crypto, :ssl, :certifi]]
   end
 
   defp deps do
     [
+      {:certifi, "~> 2.12"},
       {:ex_doc, "~> 0.30", only: [:dev]},
       {:credo, "~> 1.7", only: [:dev]}
     ]
