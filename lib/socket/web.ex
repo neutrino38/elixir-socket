@@ -815,7 +815,7 @@ defmodule Socket.Web do
     <<byte_size(data)::7>>
   end
 
-  defp length(data) when byte_size(data) <= 65536 do
+  defp length(data) when byte_size(data) <= 65_536 do
     <<126::7, byte_size(data)::16>>
   end
 

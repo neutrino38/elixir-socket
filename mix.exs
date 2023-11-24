@@ -4,10 +4,10 @@ defmodule Socket.Mixfile do
   def project do
     [
       app: :socket,
-      version: "0.3.13",
+      version: "2.0.0",
       deps: deps(),
       package: package(),
-      description: "Socket handling library for Elixir"
+      description: "Socket handling library for Elixir, updated for OTP20+"
     ]
   end
 
@@ -17,14 +17,18 @@ defmodule Socket.Mixfile do
   end
 
   defp deps do
-    [{:ex_doc, "~> 0.18", only: [:dev]}]
+    [
+      {:ex_doc, "~> 0.30", only: [:dev]},
+      {:credo, "~> 1.7", only: [:dev]}
+    ]
   end
 
   defp package do
     [
-      maintainers: ["meh"],
+      name: :socket2,
+      maintainers: ["dominicletz"],
       licenses: ["WTFPL"],
-      links: %{"GitHub" => "https://github.com/meh/elixir-socket"}
+      links: %{"GitHub" => "https://github.com/dominicletz/elixir-socket"}
     ]
   end
 end
