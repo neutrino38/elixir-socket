@@ -24,6 +24,8 @@ defmodule Socket.SSL do
   * `:dh` can either be an encoded dh or `[path: "path/to/dh"]`
   * `:verify` can either be `false` to disable peer certificate verification,
     or a keyword list containing a `:function` and an optional `:data`
+  * `:cacerts` can be a custom list of certificates to accept during
+    certificate verification
   * `:password` the password to use to decrypt certificates
   * `:renegotiation` if it's set to `:secure` renegotiation will be secured
   * `:ciphers` is a list of ciphers to allow
@@ -119,12 +121,12 @@ defmodule Socket.SSL do
       end
 
     timeout = options[:timeout] || :infinity
-    options = Keyword.delete(options, :timeout)
 
     options =
-      Keyword.put_new_lazy(options, :certs, fn ->
-        :certifi.cacerts()
-      end)
+      options
+      |> Keyword.delete(:timeout)
+      |> Keyword.put_new_lazy(:cacerts, fn -> :certifi.cacerts() end)
+      |> Keyword.put_new(:verify, true)
 
     :ssl.connect(wrap, options, timeout)
   end
@@ -157,7 +159,12 @@ defmodule Socket.SSL do
       end
 
     timeout = options[:timeout] || :infinity
-    options = Keyword.delete(options, :timeout)
+
+    options =
+      options
+      |> Keyword.delete(:timeout)
+      |> Keyword.put_new_lazy(:cacerts, fn -> :certifi.cacerts() end)
+      |> Keyword.put_new(:verify, true)
 
     :ssl.connect(address, port, arguments(options), timeout)
   end
@@ -349,6 +356,7 @@ defmodule Socket.SSL do
         {:authorities, _} -> true
         {:sni, _} -> true
         {:dh, _} -> true
+        {:cacerts, _} -> true
         {:verify, _} -> true
         {:password, _} -> true
         {:renegotiation, _} -> true
@@ -423,6 +431,12 @@ defmodule Socket.SSL do
             {:function, fun} ->
               [{:sni_fun, fun}]
           end)
+
+        {:cacerts, certs} ->
+          [{:cacerts, certs}]
+
+        {:verify, true} ->
+          [{:verify, :verify_peer}]
 
         {:verify, false} ->
           [{:verify, :verify_none}]
