@@ -51,8 +51,8 @@ defmodule Socket.SSL do
   Get the list of supported ciphers.
   """
   @spec ciphers :: [:ssl.erl_cipher_suite()]
-  def ciphers do
-    :ssl.cipher_suites()
+  def ciphers(version \\ :"tlsv1.3") do
+    :ssl.cipher_suites(:all, version)
   end
 
   @doc """
@@ -245,7 +245,7 @@ defmodule Socket.SSL do
     with {:ok, socket} <- socket |> :ssl.transport_accept(timeout),
          :ok <-
            if(options[:mode] == :active, do: socket |> :ssl.setopts([{:active, true}]), else: :ok),
-         :ok <- socket |> handshake(timeout: timeout) do
+         {:ok, socket} <- socket |> handshake(timeout: timeout) do
       {:ok, socket}
     else
       {:error, reason} ->
@@ -257,7 +257,7 @@ defmodule Socket.SSL do
     timeout = options[:timeout] || :infinity
     options = Keyword.delete(options, :timeout)
 
-    :ssl.ssl_accept(wrap, arguments(options), timeout)
+    :ssl.handshake(wrap, arguments(options), timeout)
   end
 
   @doc """
@@ -277,7 +277,7 @@ defmodule Socket.SSL do
   def handshake(socket, options \\ []) when socket |> Record.is_record(:sslsocket) do
     timeout = options[:timeout] || :infinity
 
-    :ssl.ssl_accept(socket, timeout)
+    :ssl.handshake(socket, timeout)
   end
 
   @doc """
