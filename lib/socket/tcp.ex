@@ -26,9 +26,14 @@ defmodule Socket.TCP do
     - `:low` defines the `:low_watermark`, see `inet:setopts`
     - `:high` defines the `:high_watermark`, see `inet:setopts`
   * `:version` sets the IP version to use
-  * `:options` must be a list of atoms
+  * `:options` must be a list of atoms or tuples:
     - `:keepalive` sets `SO_KEEPALIVE`
     - `:nodelay` sets `TCP_NODELAY`
+    - `:defer_accept` sets `TCP_DEFER_ACCEPT`
+    - `{:defer_accept, seconds}` set `TCP_DEFER_ACCEPT` with the given seconds defer time
+    - `:fast_open` enables tcp fast open (TFO) on the socket
+    - `{:fast_open, queue_len}` enables TFO with the given queue_len
+    - `:fast_open_connect` enables tcp fast open connect (TFO) on the socket
   * `:packet` see `inet:setopts`
   * `:size` sets the max length of the packet body, see `inet:setopts`
 
@@ -41,6 +46,7 @@ defmodule Socket.TCP do
       client |> Socket.Stream.close
 
   """
+  require Logger
 
   use Socket.Helpers
   require Record
@@ -345,7 +351,64 @@ defmodule Socket.TCP do
 
             :nodelay ->
               [{:nodelay, true}]
+
+            :fast_open ->
+              tcp_fast_open(5)
+
+            {:fast_open, queue_length} when is_integer(queue_length) ->
+              tcp_fast_open(queue_length)
+
+            :fast_open_connect ->
+              tcp_fast_open_connect()
+
+            :defer_accept ->
+              tcp_defer_accept(3)
+
+            {:defer_accept, seconds} when is_integer(seconds) ->
+              tcp_defer_accept(seconds)
           end)
       end)
+  end
+
+  defp tcp_fast_open(queue_length) do
+    with {:ok, flags} <- File.read("/proc/sys/net/ipv4/tcp_fastopen"),
+         {flags, _rest} <- Integer.parse(flags) do
+      if Bitwise.band(flags, 2) == 0 do
+        Logger.warning(
+          "TCP Fast Open is not enabled on this system, please enable it by running `echo 3 > /proc/sys/net/ipv4/tcp_fastopen`"
+        )
+      end
+    end
+
+    tcp_fastopen_linux = 23
+    linux_tcp_option(tcp_fastopen_linux, queue_length)
+  end
+
+  defp tcp_fast_open_connect() do
+    with {:ok, flags} <- File.read("/proc/sys/net/ipv4/tcp_fastopen"),
+         {flags, _rest} <- Integer.parse(flags) do
+      if Bitwise.band(flags, 1) == 0 do
+        Logger.warning(
+          "TCP Fast Open Connect is not enabled on this system, please enable it by running `echo 1 > /proc/sys/net/ipv4/tcp_fastopen`"
+        )
+      end
+    end
+
+    tcp_fastopen_connect_linux = 30
+    linux_tcp_option(tcp_fastopen_connect_linux, 1)
+  end
+
+  defp tcp_defer_accept(seconds) do
+    tcp_defer_accept = 9
+    linux_tcp_option(tcp_defer_accept, seconds)
+  end
+
+  defp linux_tcp_option(option, value) do
+    if :os.type() == {:unix, :linux} do
+      sol_tcp = 6
+      [{:raw, sol_tcp, option, <<value::native-32>>}]
+    else
+      []
+    end
   end
 end
