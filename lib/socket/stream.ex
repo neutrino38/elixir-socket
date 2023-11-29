@@ -141,6 +141,41 @@ defmodule Socket.Stream do
 
   defbang(io(self, io))
   defbang(io(self, io, options))
+
+  @doc false
+  def file_emulation(self, path, options) do
+    cond do
+      options[:size] && options[:chunk_size] ->
+        file_emulation(self, path, options[:offset] || 0, options[:size], options[:chunk_size])
+
+      options[:size] ->
+        file_emulation(self, path, options[:offset] || 0, options[:size], 4096)
+
+      true ->
+        file_emulation(self, path, 0, -1, 4096)
+    end
+  end
+
+  defp file_emulation(self, path, offset, -1, chunk_size) when path |> is_binary do
+    file_emulation(self, path, offset, File.stat!(path).size, chunk_size)
+  end
+
+  defp file_emulation(self, path, offset, size, chunk_size) when path |> is_binary do
+    case File.open!(
+           path,
+           [:read],
+           &io(self, &1, offset: offset, size: size, chunk_size: chunk_size)
+         ) do
+      {:ok, :ok} ->
+        :ok
+
+      {:ok, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 end
 
 defimpl Socket.Stream.Protocol, for: Port do
@@ -214,37 +249,7 @@ defimpl Socket.Stream.Protocol, for: Tuple do
   end
 
   def file(self, path, options \\ []) when self |> Record.is_record(:sslsocket) do
-    cond do
-      options[:size] && options[:chunk_size] ->
-        file(self, path, options[:offset] || 0, options[:size], options[:chunk_size])
-
-      options[:size] ->
-        file(self, path, options[:offset] || 0, options[:size], 4096)
-
-      true ->
-        file(self, path, 0, -1, 4096)
-    end
-  end
-
-  defp file(self, path, offset, -1, chunk_size) when path |> is_binary do
-    file(self, path, offset, File.stat!(path).size, chunk_size)
-  end
-
-  defp file(self, path, offset, size, chunk_size) when path |> is_binary do
-    case File.open!(
-           path,
-           [:read],
-           &Socket.Stream.io(self, &1, offset: offset, size: size, chunk_size: chunk_size)
-         ) do
-      {:ok, :ok} ->
-        :ok
-
-      {:ok, {:error, reason}} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    Socket.Stream.file_emulation(self, path, options)
   end
 
   def recv(self) when self |> Record.is_record(:sslsocket) do
@@ -287,5 +292,64 @@ defimpl Socket.Stream.Protocol, for: Tuple do
 
   def close(self) do
     :ssl.close(self)
+  end
+end
+
+defimpl Socket.Stream.Protocol, for: Socket.Port do
+  def send(%Socket.Port{port: port, owner: owner}, data) do
+    Kernel.send(port, {owner, {:command, data}})
+    :ok
+  end
+
+  def file(self, path, options \\ []) do
+    Socket.Stream.file_emulation(self, path, options)
+  end
+
+  def recv(self) do
+    recv(self, 0, [])
+  end
+
+  def recv(self, length) when length |> is_integer do
+    recv(self, length, [])
+  end
+
+  def recv(self, options) when options |> is_list do
+    recv(self, 0, options)
+  end
+
+  def recv(%Socket.Port{port: port}, _length, options) do
+    timeout = options[:timeout] || :infinity
+
+    if Port.info(port) == nil do
+      {:error, nil}
+    else
+      receive do
+        {^port, {:data, {:noeol, value}}} ->
+          {:ok, value}
+
+        {^port, {:data, {:eol, value}}} ->
+          {:ok, value}
+
+        {^port, {:data, value}} ->
+          {:ok, value}
+
+        {^port, {:exit_status, status}} ->
+          {:error, {:exit_status, status}}
+
+        {:EXIT, ^port, reason} ->
+          {:error, reason}
+      after
+        timeout ->
+          {:error, :timeout}
+      end
+    end
+  end
+
+  def shutdown(_self, _how \\ :both) do
+    raise "not implemented"
+  end
+
+  def close(self) do
+    Port.close(self.port)
   end
 end
