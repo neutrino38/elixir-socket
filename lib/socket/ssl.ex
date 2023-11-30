@@ -436,16 +436,16 @@ defmodule Socket.SSL do
           [{:cacerts, certs}]
 
         {:verify, true} ->
-          [{:verify, :verify_peer}]
+          [{:verify, :verify_peer}, wildcard_fix()]
 
         {:verify, false} ->
           [{:verify, :verify_none}]
 
         {:verify, [function: fun]} ->
-          [{:verify, :verify_peer}, {:verify_fun, {fun, nil}}]
+          [{:verify, :verify_peer}, {:verify_fun, {fun, nil}}, wildcard_fix()]
 
         {:verify, [function: fun, data: data]} ->
-          [{:verify, :verify_peer}, {:verify_fun, {fun, data}}]
+          [{:verify, :verify_peer}, {:verify_fun, {fun, data}}, wildcard_fix()]
 
         {:identity, identity} ->
           Enum.flat_map(identity, fn
@@ -552,4 +552,10 @@ defmodule Socket.SSL do
   """
   @spec renegotiate!(t) :: :ok | no_return
   defbang(renegotiate(socket))
+
+  defp wildcard_fix do
+    # Without this Erlang doesn't accept wildcards SSL certificate alternative names.
+    # https://github.com/erlang/otp/issues/4321
+    {:customize_hostname_check, [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]}
+  end
 end
