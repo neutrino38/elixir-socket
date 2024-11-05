@@ -5,10 +5,10 @@ defmodule Socket.Mixfile do
     [
       app: :socket2,
       elixir: "~> 1.12",
-      version: "2.1.1",
+      version: "2.1.2",
       deps: deps(),
       package: package(),
-      description: "Socket handling library for Elixir, updated for OTP20+"
+      description: "Socket handling library for Elixir, updated for OTP20+ by the witchtails team"
     ]
   end
 
@@ -30,7 +30,7 @@ defmodule Socket.Mixfile do
       name: :socket2,
       maintainers: ["dominicletz"],
       licenses: ["WTFPL"],
-      links: %{"GitHub" => "https://github.com/dominicletz/elixir-socket"}
+      links: %{"GitHub" => "https://github.com/witchtails/elixir-socket2"}
     ]
   end
 end
