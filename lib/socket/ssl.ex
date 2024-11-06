@@ -48,6 +48,8 @@ defmodule Socket.SSL do
   require Record
 
   @opaque t :: port
+  @type error :: nil | String.t()
+
 
   @doc """
   Get the list of supported ciphers.

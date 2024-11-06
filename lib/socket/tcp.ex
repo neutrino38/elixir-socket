@@ -52,6 +52,7 @@ defmodule Socket.TCP do
   require Record
 
   @opaque t :: port
+  @type error :: nil | String.t()
 
   @doc """
   Return a proper error string for the given code or nil if it can't be

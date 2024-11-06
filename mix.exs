@@ -1,4 +1,4 @@
-defmodule Socket.Mixfile do
+defmodule Socket.MixProject do
   use Mix.Project
 
   def project do
@@ -14,7 +14,7 @@ defmodule Socket.Mixfile do
 
   # Configuration for the OTP application
   def application do
-    [applications: [:crypto, :ssl, :certifi, :logger]]
+    [extra_applications: [:crypto, :ssl, :logger]]
   end
 
   defp deps do
