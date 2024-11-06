@@ -50,7 +50,6 @@ defmodule Socket.SSL do
   @opaque t :: port
   @type error :: nil | String.t()
 
-
   @doc """
   Get the list of supported ciphers.
   """
