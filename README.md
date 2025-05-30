@@ -14,7 +14,7 @@ In your `mix.exs` file
 defp deps do
   [
     # ...
-    {:socket2, "~> 1.0"},
+    {:socket2, "~> 2.1.2"},
     # ...
   ]
 end
