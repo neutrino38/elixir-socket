@@ -26,9 +26,14 @@ defmodule Socket.TCP do
     - `:low` defines the `:low_watermark`, see `inet:setopts`
     - `:high` defines the `:high_watermark`, see `inet:setopts`
   * `:version` sets the IP version to use
-  * `:options` must be a list of atoms
+  * `:options` must be a list of atoms or tuples:
     - `:keepalive` sets `SO_KEEPALIVE`
     - `:nodelay` sets `TCP_NODELAY`
+    - `:defer_accept` sets `TCP_DEFER_ACCEPT`
+    - `{:defer_accept, seconds}` set `TCP_DEFER_ACCEPT` with the given seconds defer time
+    - `:fast_open` enables tcp fast open (TFO) on the socket
+    - `{:fast_open, queue_len}` enables TFO with the given queue_len
+    - `:fast_open_connect` enables tcp fast open connect (TFO) on the socket
   * `:packet` see `inet:setopts`
   * `:size` sets the max length of the packet body, see `inet:setopts`
 
@@ -36,25 +41,27 @@ defmodule Socket.TCP do
 
       server = Socket.TCP.listen!(1337, packet: :line)
 
-      client = server |> Socket.Stream.accept!
+      client = server |> Socket.accept!
       client |> Socket.Stream.send!(client |> Socket.Stream.recv!)
-      client |> Socket.close
+      client |> Socket.Stream.close
 
   """
+  require Logger
 
   use Socket.Helpers
   require Record
 
   @opaque t :: port
+  @type error :: nil | String.t()
 
   @doc """
   Return a proper error string for the given code or nil if it can't be
   converted.
   """
-  @spec error(term) :: String.t
+  @spec error(term) :: String.t()
   def error(code) do
     case :inet.format_error(code) do
-      'unknown POSIX error' ->
+      ~c"unknown POSIX error" ->
         nil
 
       message ->
@@ -65,8 +72,9 @@ defmodule Socket.TCP do
   @doc """
   Create a TCP socket connecting to the given host and port tuple.
   """
-  @spec connect({ Socket.Address.t, :inet.port_number }) :: { :ok, t } | { :error, Socket.Error.t }
-  def connect({ address, port }) do
+  @spec connect({Socket.Address.t(), :inet.port_number()}) ::
+          {:ok, t} | {:error, Socket.Error.t()}
+  def connect({address, port}) do
     connect(address, port)
   end
 
@@ -74,15 +82,18 @@ defmodule Socket.TCP do
   Create a TCP socket connecting to the given host and port tuple, raising if
   an error occurs.
   """
-  @spec connect({ Socket.Address.t, :inet.port_number }) :: t | no_return
-  defbang connect(descriptor)
+  @spec connect!({Socket.Address.t(), :inet.port_number()}) :: t | no_return
+  defbang(connect(descriptor))
 
   @doc """
   Create a TCP socket connecting to the given host and port tuple and options,
   or to the given host and port.
   """
-  @spec connect({ Socket.Address.t, :inet.port_number } | Socket.Address.t, Keyword.t | :inet.port_number) :: { :ok, t } | { :error, Socket.Error.t }
-  def connect({ address, port }, options) when options |> is_list do
+  @spec connect(
+          {Socket.Address.t(), :inet.port_number()} | Socket.Address.t(),
+          Keyword.t() | :inet.port_number()
+        ) :: {:ok, t} | {:error, Socket.Error.t()}
+  def connect({address, port}, options) when options |> is_list do
     connect(address, port, options)
   end
 
@@ -94,31 +105,37 @@ defmodule Socket.TCP do
   Create a TCP socket connecting to the given host and port tuple and options,
   or to the given host and port, raising if an error occurs.
   """
-  @spec connect({ Socket.Address.t, :inet.port_number } | Socket.Address.t, Keyword.t | :inet.port_number) :: t | no_return
-  defbang connect(address, port)
+  @spec connect!(
+          {Socket.Address.t(), :inet.port_number()} | Socket.Address.t(),
+          Keyword.t() | :inet.port_number()
+        ) :: t | no_return
+  defbang(connect(address, port))
 
   @doc """
   Create a TCP socket connecting to the given host and port.
   """
-  @spec connect(String.t | :inet.ip_address, :inet.port_number, Keyword.t) :: { :ok, t } | { :error, Socket.Error.t }
+  @spec connect(String.t() | :inet.ip_address(), :inet.port_number(), Keyword.t()) ::
+          {:ok, t} | {:error, Socket.Error.t()}
   def connect(address, port, options) when address |> is_binary do
-    options = Keyword.put_new(options, :mode, :passive)
+    timeout = options[:timeout] || :infinity
+    options = Keyword.delete(options, :timeout)
 
-    :gen_tcp.connect(String.to_char_list(address), port, arguments(options), options[:timeout] || :infinity)
+    :gen_tcp.connect(String.to_charlist(address), port, arguments(options), timeout)
   end
 
   @doc """
   Create a TCP socket connecting to the given host and port, raising in case of
   error.
   """
-  @spec connect!(String.t | :inet.ip_address, :inet.port_number, Keyword.t) :: t | no_return
-  defbang connect(address, port, options)
+  @spec connect!(String.t() | :inet.ip_address(), :inet.port_number(), Keyword.t()) ::
+          t | no_return
+  defbang(connect(address, port, options))
 
   @doc """
   Create a TCP socket listening on an OS chosen port, use `local` to know the
   port it was bound on.
   """
-  @spec listen :: { :ok, t } | { :error, Socket.Error.t }
+  @spec listen :: {:ok, t} | {:error, Socket.Error.t()}
   def listen do
     listen(0, [])
   end
@@ -128,13 +145,13 @@ defmodule Socket.TCP do
   port it was bound on, raising in case of error.
   """
   @spec listen! :: t | no_return
-  defbang listen
+  defbang(listen)
 
   @doc """
   Create a TCP socket listening on an OS chosen port using the given options or
   listening on the given port.
   """
-  @spec listen(:inet.port_number | Keyword.t) :: { :ok, t } | { :error, Socket.Error.t }
+  @spec listen(:inet.port_number() | Keyword.t()) :: {:ok, t} | {:error, Socket.Error.t()}
   def listen(port) when port |> is_integer do
     listen(port, [])
   end
@@ -147,16 +164,18 @@ defmodule Socket.TCP do
   Create a TCP socket listening on an OS chosen port using the given options or
   listening on the given port, raising in case of error.
   """
-  @spec listen!(:inet.port_number | Keyword.t) :: t | no_return
-  defbang listen(port_or_options)
+  @spec listen!(:inet.port_number() | Keyword.t()) :: t | no_return
+  defbang(listen(port_or_options))
 
   @doc """
   Create a TCP socket listening on the given port and using the given options.
   """
-  @spec listen(:inet.port_number, Keyword.t) :: { :ok, t } | { :error, Socket.Error.t }
+  @spec listen(:inet.port_number(), Keyword.t()) :: {:ok, t} | {:error, Socket.Error.t()}
   def listen(port, options) when options |> is_list do
-    options = Keyword.put(options, :mode, :passive)
-    options = Keyword.put_new(options, :reuseaddr, true)
+    options =
+      options
+      |> Keyword.put(:mode, :passive)
+      |> Keyword.put_new(:reuse, true)
 
     :gen_tcp.listen(port, arguments(options))
   end
@@ -165,35 +184,38 @@ defmodule Socket.TCP do
   Create a TCP socket listening on the given port and using the given options,
   raising in case of error.
   """
-  @spec listen!(:inet.port_number, Keyword.t) :: t | no_return
-  defbang listen(port, options)
+  @spec listen!(:inet.port_number(), Keyword.t()) :: t | no_return
+  defbang(listen(port, options))
 
   @doc """
   Accept a new client from a listening socket, optionally passing options.
   """
-  @spec accept(t | port)            :: { :ok, t } | { :error, Error.t }
-  @spec accept(t | port, Keyword.t) :: { :ok, t } | { :error, Error.t }
-  def accept(sock, options \\ []) do
-    case :gen_tcp.accept(sock, options[:timeout] || :infinity) do
-      { :ok, sock } ->
+  @spec accept(t | port) :: {:ok, t} | {:error, Error.t()}
+  @spec accept(t | port, Keyword.t()) :: {:ok, t} | {:error, Error.t()}
+  def accept(socket, options \\ []) do
+    timeout = options[:timeout] || :infinity
+
+    case :gen_tcp.accept(socket, timeout) do
+      {:ok, socket} ->
+        # XXX: the error code here is not checked
         case options[:mode] do
           :active ->
-            :inet.setopts(sock, active: true)
+            :inet.setopts(socket, active: true)
 
           :once ->
-            :inet.setopts(sock, active: :once)
+            :inet.setopts(socket, active: :once)
 
           :passive ->
-            :inet.setopts(sock, active: false)
+            :inet.setopts(socket, active: false)
 
           nil ->
             :ok
         end
 
-        { :ok, sock }
+        {:ok, socket}
 
-      error ->
-        error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -201,25 +223,25 @@ defmodule Socket.TCP do
   Accept a new client from a listening socket, optionally passing options,
   raising if an error occurs.
   """
-  @spec accept!(t)            :: t | no_return
-  @spec accept!(t, Keyword.t) :: t | no_return
-  defbang accept(self)
-  defbang accept(self, options)
+  @spec accept!(t) :: t | no_return
+  @spec accept!(t, Keyword.t()) :: t | no_return
+  defbang(accept(self))
+  defbang(accept(self, options))
 
   @doc """
   Set the process which will receive the messages.
   """
-  @spec process(t, pid) :: :ok | { :error, :closed | :not_owner | Error.t }
-  def process(sock, pid) do
-    :gen_tcp.controlling_process(sock, pid)
+  @spec process(t, pid) :: :ok | {:error, :closed | :not_owner | Error.t()}
+  def process(socket, pid) do
+    :gen_tcp.controlling_process(socket, pid)
   end
 
   @doc """
   Set the process which will receive the messages, raising if an error occurs.
   """
   @spec process!(t | port, pid) :: :ok | no_return
-  def process!(sock, pid) do
-    case process(sock, pid) do
+  def process!(socket, pid) do
+    case process(socket, pid) do
       :ok ->
         :ok
 
@@ -237,7 +259,7 @@ defmodule Socket.TCP do
   @doc """
   Set options of the socket.
   """
-  @spec options(t | Socket.SSL.t | port, Keyword.t) :: :ok | { :error, Socket.Error.t }
+  @spec options(t | Socket.SSL.t() | port, Keyword.t()) :: :ok | {:error, Socket.Error.t()}
   def options(socket, options) when socket |> Record.is_record(:sslsocket) do
     Socket.SSL.options(socket, options)
   end
@@ -249,81 +271,145 @@ defmodule Socket.TCP do
   @doc """
   Set options of the socket, raising if an error occurs.
   """
-  @spec options!(t | Socket.SSL.t | port, Keyword.t) :: :ok | no_return
-  defbang options(socket, options)
+  @spec options!(t | Socket.SSL.t() | port, Keyword.t()) :: :ok | no_return
+  defbang(options(socket, options))
 
   @doc """
   Convert TCP options to `:inet.setopts` compatible arguments.
   """
-  @spec arguments(Keyword.t) :: list
+  @spec arguments(Keyword.t()) :: list
   def arguments(options) do
-    args = Socket.arguments(options)
+    options =
+      options
+      |> Keyword.put_new(:as, :binary)
 
-    args = case Keyword.get(options, :as, :binary) do
-      :list ->
-        [:list | args]
+    options =
+      Enum.group_by(options, fn
+        {:as, _} -> true
+        {:size, _} -> true
+        {:packet, _} -> true
+        {:backlog, _} -> true
+        {:watermark, _} -> true
+        {:local, _} -> true
+        {:version, _} -> true
+        {:options, _} -> true
+        _ -> false
+      end)
 
-      :binary ->
-        [:binary | args]
-    end
+    {local, global} = {
+      Map.get(options, true, []),
+      Map.get(options, false, [])
+    }
 
-    if size = Keyword.get(options, :size) do
-      args = [{ :packet_size, size } | args]
-    end
+    Socket.arguments(global) ++
+      Enum.flat_map(local, fn
+        {:as, :binary} ->
+          [:binary]
 
-    if packet = Keyword.get(options, :packet) do
-      args = [{ :packet, packet } | args]
-    end
+        {:as, :list} ->
+          [:list]
 
-    if backlog = Keyword.get(options, :backlog) do
-      args = [{ :backlog, backlog } | args]
-    end
+        {:size, size} ->
+          [{:packet_size, size}]
 
-    if watermark = Keyword.get(options, :watermark) do
-      if low = Keyword.get(watermark, :low) do
-        args = [{ :low_watermark, low } | args]
+        {:packet, packet} ->
+          [{:packet, packet}]
+
+        {:backlog, backlog} ->
+          [{:backlog, backlog}]
+
+        {:watermark, options} ->
+          Enum.flat_map(options, fn
+            {:low, low} ->
+              [{:low_watermark, low}]
+
+            {:high, high} ->
+              [{:high_watermark, high}]
+          end)
+
+        {:local, options} ->
+          Enum.flat_map(options, fn
+            {:address, address} ->
+              [{:ip, Socket.Address.parse(address)}]
+
+            {:port, port} ->
+              [{:port, port}]
+
+            {:fd, fd} ->
+              [{:fd, fd}]
+          end)
+
+        {:version, 4} ->
+          [:inet]
+
+        {:version, 6} ->
+          [:inet6]
+
+        {:options, options} ->
+          Enum.flat_map(options, fn
+            :keepalive ->
+              [{:keepalive, true}]
+
+            :nodelay ->
+              [{:nodelay, true}]
+
+            :fast_open ->
+              tcp_fast_open(5)
+
+            {:fast_open, queue_length} when is_integer(queue_length) ->
+              tcp_fast_open(queue_length)
+
+            :fast_open_connect ->
+              tcp_fast_open_connect()
+
+            :defer_accept ->
+              tcp_defer_accept(3)
+
+            {:defer_accept, seconds} when is_integer(seconds) ->
+              tcp_defer_accept(seconds)
+          end)
+      end)
+  end
+
+  defp tcp_fast_open(queue_length) do
+    with {:ok, flags} <- File.read("/proc/sys/net/ipv4/tcp_fastopen"),
+         {flags, _rest} <- Integer.parse(flags) do
+      if Bitwise.band(flags, 2) == 0 do
+        Logger.warning(
+          "TCP Fast Open is not enabled on this system, please enable it by running `echo 3 > /proc/sys/net/ipv4/tcp_fastopen`"
+        )
       end
+    end
 
-      if high = Keyword.get(watermark, :high) do
-        args = [{ :high_watermark, high } | args]
+    tcp_fastopen_linux = 23
+    linux_tcp_option(tcp_fastopen_linux, queue_length)
+  end
+
+  defp tcp_fast_open_connect() do
+    with {:ok, flags} <- File.read("/proc/sys/net/ipv4/tcp_fastopen"),
+         {flags, _rest} <- Integer.parse(flags) do
+      if Bitwise.band(flags, 1) == 0 do
+        Logger.warning(
+          "TCP Fast Open Connect is not enabled on this system, please enable it by running `echo 1 > /proc/sys/net/ipv4/tcp_fastopen`"
+        )
       end
     end
 
-    if local = Keyword.get(options, :local) do
-      if address = Keyword.get(local, :address) do
-        args = [{ :ip, Socket.Address.parse(address) } | args]
-      end
+    tcp_fastopen_connect_linux = 30
+    linux_tcp_option(tcp_fastopen_connect_linux, 1)
+  end
 
-      if port = Keyword.get(local, :port) do
-        args = [{ :port, port } | args]
-      end
+  defp tcp_defer_accept(seconds) do
+    tcp_defer_accept = 9
+    linux_tcp_option(tcp_defer_accept, seconds)
+  end
 
-      if fd = Keyword.get(local, :fd) do
-        args = [{ :fd, fd } | args]
-      end
+  defp linux_tcp_option(option, value) do
+    if :os.type() == {:unix, :linux} do
+      sol_tcp = 6
+      [{:raw, sol_tcp, option, <<value::native-32>>}]
+    else
+      []
     end
-
-    args = case Keyword.get(options, :version) do
-      4 ->
-        [:inet | args]
-
-      6 ->
-        [:inet6 | args]
-
-      nil ->
-        args
-    end
-
-    if opts = Keyword.get(options, :options) do
-      if Enum.member?(opts, :keepalive) do
-        args = [{ :keepalive, true } | args]
-      end
-
-      if Enum.member?(opts, :nodelay) do
-        args = [{ :nodelay, true } | args]
-      end
-    end
-
-    args
   end
 end
