@@ -125,9 +125,9 @@ end
 ### Active websockets
 
 Now WebSocket also support an active mode when you can receive data as Erlang messages. It also handles keepalive automatically.
-Data is received as { :web, socket, data } messages and socket disconnection notification as : { web_closed, socket }
+Data is received as `{ :web, socket, data }` messages and socket disconnection notification as : `{ web_closed, socket }`
 
-In order to use this function, pass the *mode: active* option. You can also specify the PID of the process receiving the messages.
+In order to use this function, pass the `mode: active` option. You can also specify the PID of the process receiving the messages using the `process: <pid>` option.
 ```elixir
 socket = Socket.Web.connect!("echo.websocket.org", [ mode: :active, process: self() ] )
 Socket.Web.Send(socket, "Hello")
