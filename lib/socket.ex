@@ -17,17 +17,25 @@ defmodule Socket do
     @type t :: %__MODULE__{message: String.t() | nil}
 
     def exception(reason: reason) do
-      message =
-        cond do
-          msg = Socket.TCP.error(reason) ->
-            msg
+      message = case reason do
+        r when is_atom(r) ->
+          cond do
+            msg = Socket.TCP.error(reason) ->
+              msg
 
-          msg = Socket.SSL.error(reason) ->
-            msg
+            msg = Socket.SSL.error(reason) ->
+              msg
 
-          true ->
-            reason |> to_string
-        end
+            true ->
+              reason |> to_string
+          end
+
+        { :tls_alert, { errcode, ssl_message }} ->
+          List.to_string(ssl_message)
+
+        _ -> inspect(reason)
+      end
+
 
       %Error{message: message}
     end

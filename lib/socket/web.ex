@@ -93,15 +93,17 @@ defmodule Socket.Web do
   end
 
   defstruct [
-    :socket,
-    :version,
-    :path,
-    :origin,
-    :protocols,
-    :extensions,
-    :key,
-    :mask,
-    {:headers, %{}}
+    socket: nil,
+    version: 13,
+    path: nil,
+    origin: nil,
+    protocols: [],
+    extensions: nil,
+    key: nil,
+    mask: false,
+    active_pid: nil,
+    target_pid: nil,
+    headers: {}
   ]
 
   @type t :: %Socket.Web{
@@ -112,7 +114,9 @@ defmodule Socket.Web do
           protocols: [String.t()],
           extensions: [String.t()],
           key: String.t(),
-          mask: boolean
+          mask: boolean,
+          active_pid: pid(),
+          target_pid: pid()
         }
 
   @spec headers(%{String.t() => String.t()}, Socket.t(), Keyword.t()) :: %{
@@ -136,6 +140,30 @@ defmodule Socket.Web do
   @spec key(String.t()) :: String.t()
   defp key(value) do
     :crypto.hash(:sha, value <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11") |> :base64.encode()
+  end
+
+  # Active Web socket process function
+  defp active_websocket_process(self) do
+    case recv(self) do
+        # process data
+      {:ok, {:text, data}} ->
+        if self.target_pid do
+          Kernel.send(self.target_pid, { :web, self, data })
+        end
+        active_websocket_process(self)
+
+      {:ping, _ } ->
+        send!(self, {:pong, ""})
+        active_websocket_process(self)
+
+      {:error, reason} -> nil
+
+      {:ok, {:close, :abnormal, nil}} ->
+        if self.target_pid do
+          Kernel.send(self.target_pid, { :web_closed, self } )
+        end
+        nil
+    end
   end
 
   @doc """
@@ -324,7 +352,13 @@ defmodule Socket.Web do
 
     client |> Socket.packet!(:raw)
 
-    %W{socket: client, version: 13, path: path, origin: origin, key: handshake, mask: true}
+    self = %Socket.Web{socket: client, version: 13, path: path, origin: origin, key: handshake, mask: true}
+    if local[:mode] == :active do
+      target_pid = if is_nil(local[:process]) do self() else local[:process] end
+      process(self, target_pid) |> active(true)
+    else
+      self
+    end
   end
 
   @doc """
@@ -505,7 +539,7 @@ defmodule Socket.Web do
 
     client |> Socket.packet!(:raw)
 
-    %W{
+    %Socket.Web{
       socket: client,
       origin: headers["origin"],
       path: path,
@@ -562,6 +596,10 @@ defmodule Socket.Web do
         {:extensions, _} -> true
         {:handshake, _} -> true
         {:headers, _} -> true
+        {:process, _} -> true
+
+        # active websocket will be reimplemented
+        {:mode, _} -> true
         _ -> false
       end)
 
@@ -997,4 +1035,83 @@ defmodule Socket.Web do
   def abort(%W{socket: socket}) do
     Socket.Stream.close(socket)
   end
+
+  def process(self, pid) when is_map(self) and is_pid(pid) do
+    # TODO if pid is changed kill the old process and restart a new active process
+    Map.put(self, :target_pid, pid)
+  end
+
+  def active(self, true) when is_map(self) do
+    if self.active_pid != nil and Process.alive?(self.active_pid) do
+      self
+    else
+      active_pid = spawn(fn -> active_websocket_process(self) end)
+      Map.put(self, :active_pid, active_pid)
+    end
+  end
+
+  def active(self, false) when is_map(self) do
+    if self.active_pid != nil and Process.alive?(self.active_pid) do
+      Process.send(self.active_pid, :stop)
+    end
+    Map.put(self, :active_pid, nil)
+  end
+
+  # ------------------ Socket protocol implementation for WebSocket ----
+  defimpl Socket.Protocol do
+    require Record
+
+    def equal?(self = %Socket.Web{}, other) do
+      self == other
+    end
+
+    def equal?(self = %Socket.Web{}, other) do
+      self |> elem(1) == other
+    end
+
+    def equal?(_, _) do
+      false
+    end
+
+    def accept(self = %Socket.Web{}, options \\ []) do
+      Socket.Web.accept(self, options)
+    end
+
+    def options(self = %Socket.Web{}, opts) do
+      Socket.Web.options(self, opts)
+    end
+
+    def packet(self = %Socket.Web{}, _type) do
+      self
+    end
+
+    def process(self = %Socket.Web{}, pid) do
+      Socket.Web.process(self, pid)
+    end
+
+    def active(self = %Socket.Web{}) do
+      active(self, true)
+    end
+
+    def active(self = %Socket.Web{}, :once) do
+      self
+    end
+
+    def passive(self = %Socket.Web{}) do
+      active(self, false)
+    end
+
+    def local(self = %Socket.Web{}) do
+      Socket.local(self.socket)
+    end
+
+    def remote(self = %Socket.Web{}) do
+      Socket.remote(self.socket)
+    end
+
+    def close(self = %Socket.Web{}) do
+      Socket.Web.close(self)
+    end
+  end
+
 end
