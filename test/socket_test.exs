@@ -30,6 +30,21 @@ defmodule SocketTest do
     assert socket |> Socket.Web.recv!() == {:pong, "test"}
   end
 
+  test "a client socket carries headers as a map" do
+    listener = Socket.Web.listen!(0)
+    {_ip, port} = Socket.local!(listener)
+
+    Task.start_link(fn ->
+      client = Socket.Web.accept!(listener)
+      Socket.Web.accept!(client)
+    end)
+
+    socket = Socket.Web.connect!("localhost", port)
+
+    assert socket.headers == %{}
+    assert socket.headers["upgrade"] == nil
+  end
+
   def server(port) do
     server = Socket.Web.listen!(port)
     client = server |> Socket.Web.accept!()
