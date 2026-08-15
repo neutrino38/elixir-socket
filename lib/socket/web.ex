@@ -74,6 +74,11 @@ defmodule Socket.Web do
     end
   )
 
+  # Decoding must accept a code outside the registered set: RFC 6455 §7.4.2
+  # leaves 3000-4999 to applications and libraries, and raising on one turns a
+  # peer's clean close into a crash of the reader process.
+  defp close_code(code) when is_integer(code), do: code
+
   defmacrop known?(n) do
     quote do
       unquote(n) in [0x1, 0x2, 0x8, 0x9, 0xA]
@@ -140,31 +145,73 @@ defmodule Socket.Web do
     :crypto.hash(:sha, value <> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11") |> :base64.encode()
   end
 
-  # Active Web socket process function
-  defp active_websocket_process(self) do
+  # Active Web socket process function.
+  #
+  # This loop is the only reader of the socket and it runs under a bare spawn/1,
+  # so every shape recv/2 can return has to be matched here: an unmatched one
+  # raises CaseClauseError, kills this process and takes a perfectly healthy
+  # connection down with it. The clauses below cover the whole of `packet()` —
+  # binary frames, the fragmented sequence of §5.4, pongs, and every close code,
+  # not only the abnormal one.
+  #
+  # `fragments` accumulates the payload of a fragmented message, in reverse.
+  defp active_websocket_process(self, fragments \\ []) do
     case recv(self) do
-      # process data
+      # ---- unfragmented data ------------------------------------------------
       {:ok, {:text, data}} ->
-        if self.target_pid do
-          Kernel.send(self.target_pid, {:web, self, data})
-        end
-
+        notify(self, {:web, self, data})
         active_websocket_process(self)
 
-      {:ok, {:ping, _}} ->
-        send!(self, {:pong, ""})
+      {:ok, {:binary, data}} ->
+        notify(self, {:web, self, data})
         active_websocket_process(self)
 
-      {:error, _reason} ->
-        nil
+      # ---- fragmented data (RFC 6455 §5.4) ----------------------------------
+      # The final frame is delivered as one message: the owner of a %Socket.Web{}
+      # is handed messages, not frames.
+      {:ok, {:fragmented, :end, data}} ->
+        notify(self, {:web, self, IO.iodata_to_binary(Enum.reverse([data | fragments]))})
+        active_websocket_process(self)
 
-      {:ok, {:close, :abnormal, nil}} ->
-        if self.target_pid do
-          Kernel.send(self.target_pid, {:web_closed, self})
-        end
+      {:ok, {:fragmented, :continuation, data}} ->
+        active_websocket_process(self, [data | fragments])
 
-        nil
+      # First frame of a fragmented message (opcode :text or :binary).
+      {:ok, {:fragmented, _opcode, data}} ->
+        active_websocket_process(self, [data])
+
+      # ---- control frames ---------------------------------------------------
+      # §5.5.3: the pong MUST carry the application data of the ping it answers.
+      # Answering with an empty payload makes a peer that matches its own cookie
+      # (Kamailio's websocket keep-alive does) conclude the connection is dead.
+      {:ok, {:ping, cookie}} ->
+        send!(self, {:pong, cookie})
+        active_websocket_process(self, fragments)
+
+      {:ok, {:pong, cookie}} ->
+        notify(self, {:web_pong, self, cookie})
+        active_websocket_process(self, fragments)
+
+      {:ok, :close} ->
+        closed(self, :normal)
+
+      {:ok, {:close, reason, _data}} ->
+        closed(self, reason)
+
+      # ---- transport error --------------------------------------------------
+      {:error, reason} ->
+        closed(self, reason)
     end
+  end
+
+  defp notify(%W{target_pid: nil}, _message), do: :ok
+  defp notify(%W{target_pid: pid}, message), do: Kernel.send(pid, message)
+
+  # The reason is carried to the owner: a connection that goes away is a
+  # diagnostic, and `{:web_closed, socket}` alone said only "gone".
+  defp closed(self, reason) do
+    notify(self, {:web_closed, self, reason})
+    nil
   end
 
   @doc """
