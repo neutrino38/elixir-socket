@@ -26,6 +26,22 @@ defmodule Socket.IPv6Test do
     assert Socket.Address.parse("example.com") == nil
   end
 
+  test "a datagram reaches an IPv6 peer named as a tuple, a string or a reference" do
+    {:ok, server} = :gen_udp.open(0, [:binary, {:ip, @v6}, {:active, false}])
+    {:ok, {_ip, port}} = :inet.sockname(server)
+    client = Socket.UDP.open!(0, mode: :passive, local: [address: @v6])
+
+    for target <- [@v6, "::1", "[::1]"] do
+      assert Socket.Datagram.send(client, "ping", {target, port}) == :ok,
+             "sending to #{inspect(target)} failed"
+
+      assert {:ok, {_, _, "ping"}} = :gen_udp.recv(server, 0, 1_000)
+    end
+
+    :gen_udp.close(client)
+    :gen_udp.close(server)
+  end
+
   test "TCP reaches an IPv6 peer named as a reference too" do
     listener = Socket.TCP.listen!(0, local: [address: @v6], version: 6)
     {_ip, port} = Socket.local!(listener)
