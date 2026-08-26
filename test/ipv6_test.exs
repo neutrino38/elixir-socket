@@ -11,6 +11,28 @@ defmodule Socket.IPv6Test do
     assert Socket.Address.to_uri_host({127, 0, 0, 1}) == "127.0.0.1"
     assert Socket.Address.to_uri_host("127.0.0.1") == "127.0.0.1"
     assert Socket.Address.to_uri_host("example.com") == "example.com"
+    # The rendering is canonical (RFC 5952), not the caller's spelling.
+    assert Socket.Address.to_uri_host("2001:DB8:0:0:0:0:0:1") == "[2001:db8::1]"
+  end
+
+  test "an IPv6reference parses as the address it names" do
+    assert Socket.Address.parse("[::1]") == @v6
+    assert Socket.Address.parse("::1") == @v6
+    assert Socket.Address.valid?("[2001:db8::1]")
+    # Only a v6 address is written inside brackets, and the brackets must close.
+    assert Socket.Address.parse("[127.0.0.1]") == nil
+    assert Socket.Address.parse("[::1") == nil
+    assert Socket.Address.parse("[::1]x") == nil
+    assert Socket.Address.parse("example.com") == nil
+  end
+
+  test "TCP reaches an IPv6 peer named as a reference too" do
+    listener = Socket.TCP.listen!(0, local: [address: @v6], version: 6)
+    {_ip, port} = Socket.local!(listener)
+
+    assert {:ok, client} = Socket.TCP.connect("[::1]", port, timeout: 1_000)
+    Socket.close(client)
+    Socket.close(listener)
   end
 
   test "TCP reaches an IPv6 literal given as a string or as a tuple" do
