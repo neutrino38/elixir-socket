@@ -42,6 +42,23 @@ defmodule Socket.IPv6Test do
     :gen_udp.close(server)
   end
 
+  test "a UDP socket binds the address it is given, in that address's family" do
+    # The family follows the address; nothing has to declare it.
+    socket = Socket.UDP.open!(0, mode: :passive, local: [address: "[::1]"])
+    assert {:ok, {@v6, _port}} = :inet.sockname(socket)
+    :gen_udp.close(socket)
+  end
+
+  test "an IPv6 socket can be kept from accepting IPv4" do
+    socket = Socket.UDP.open!(0, mode: :passive, version: 6, v6only: true)
+    assert {:ok, [ipv6_v6only: true]} = :inet.getopts(socket, [:ipv6_v6only])
+    :gen_udp.close(socket)
+
+    socket = Socket.UDP.open!(0, mode: :passive, version: 6, v6only: false)
+    assert {:ok, [ipv6_v6only: false]} = :inet.getopts(socket, [:ipv6_v6only])
+    :gen_udp.close(socket)
+  end
+
   test "TCP reaches an IPv6 peer named as a reference too" do
     listener = Socket.TCP.listen!(0, local: [address: @v6], version: 6)
     {_ip, port} = Socket.local!(listener)
