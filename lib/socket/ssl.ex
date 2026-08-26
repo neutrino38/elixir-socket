@@ -233,6 +233,29 @@ defmodule Socket.SSL do
   defbang(listen(port, options))
 
   @doc """
+  Accept a connection from a listening SSL socket without handshaking it.
+
+  `accept/2` waits for a client and handshakes it under a single timeout, which
+  a server cannot use: waiting for a client is unbounded, while a handshake must
+  be bounded or a peer that stalls mid-handshake holds the accept loop. Take the
+  connection with this, then `handshake/2` it under its own timeout.
+  """
+  @spec transport_accept(t) :: {:ok, t} | {:error, term}
+  @spec transport_accept(t, Keyword.t()) :: {:ok, t} | {:error, term}
+  def transport_accept(socket, options \\ []) when socket |> Record.is_record(:sslsocket) do
+    :ssl.transport_accept(socket, options[:timeout] || :infinity)
+  end
+
+  @doc """
+  Accept a connection from a listening SSL socket without handshaking it,
+  raising if an error occurs.
+  """
+  @spec transport_accept!(t) :: t | no_return
+  @spec transport_accept!(t, Keyword.t()) :: t | no_return
+  defbang(transport_accept(socket))
+  defbang(transport_accept(socket, options))
+
+  @doc """
   Accept a connection from a listening SSL socket or start an SSL connection on
   the given client socket.
   """
@@ -256,7 +279,7 @@ defmodule Socket.SSL do
   def accept(socket, options) when socket |> Record.is_record(:sslsocket) do
     timeout = options[:timeout] || :infinity
 
-    with {:ok, socket} <- socket |> :ssl.transport_accept(timeout),
+    with {:ok, socket} <- socket |> transport_accept(timeout: timeout),
          :ok <-
            if(options[:mode] == :active, do: socket |> :ssl.setopts([{:active, true}]), else: :ok),
          {:ok, socket} <- socket |> handshake(timeout: timeout) do
@@ -286,8 +309,8 @@ defmodule Socket.SSL do
   Execute the handshake; useful if you want to delay the handshake to make it
   in another process.
   """
-  @spec handshake(t) :: :ok | {:error, term}
-  @spec handshake(t, Keyword.t()) :: :ok | {:error, term}
+  @spec handshake(t) :: {:ok, t} | {:error, term}
+  @spec handshake(t, Keyword.t()) :: {:ok, t} | {:error, term}
   def handshake(socket, options \\ []) when socket |> Record.is_record(:sslsocket) do
     timeout = options[:timeout] || :infinity
 
