@@ -30,7 +30,8 @@ defmodule Socket.TestPKI do
 
   defp generate do
     with {:ok, openssl} <- find_openssl(),
-         dir = Path.join(System.tmp_dir!(), "socket2-mtls-#{:erlang.unique_integer([:positive])}"),
+         dir =
+           Path.join(System.tmp_dir!(), "socket2-mtls-#{:erlang.unique_integer([:positive])}"),
          :ok <- File.mkdir_p(dir),
          :ok <- build(openssl, dir) do
       %{

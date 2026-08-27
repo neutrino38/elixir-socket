@@ -138,6 +138,7 @@ defmodule Socket.MTLSTest do
         )
 
       {_ip, port} = Socket.local!(listener)
+
       spawn(fn ->
         with {:ok, a} <- Socket.SSL.transport_accept(listener, timeout: 2_000),
              do: Socket.SSL.handshake(a, timeout: 2_000)
