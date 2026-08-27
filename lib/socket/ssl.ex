@@ -22,8 +22,15 @@ defmodule Socket.SSL do
   * `:authorities` can iehter be an encoded authorities or `[path:
     "path/to/authorities"]`
   * `:dh` can either be an encoded dh or `[path: "path/to/dh"]`
-  * `:verify` can either be `false` to disable peer certificate verification,
-    or a keyword list containing a `:function` and an optional `:data`
+  * `:verify` — `true` to verify the peer's certificate, `false` to verify
+    nothing, `:required` to verify it **and refuse a peer that presents none**
+    (server-side; see mutual TLS below), or a keyword list containing a
+    `:function` and an optional `:data`
+  * `:hostname_check` — how a CLIENT matches the name it dialled against the
+    certificate: `:https` (the default, and what accepts wildcard names),
+    `false`, or the keyword list `:ssl` takes as `customize_hostname_check`. A
+    server has no hostname to check and `:ssl` refuses the option there, so it is
+    never set on a listening socket
   * `:cacerts` can be a custom list of certificates to accept during
     certificate verification
   * `:password` the password to use to decrypt certificates
@@ -35,6 +42,40 @@ defmodule Socket.SSL do
     protocols for NPN
 
   You can also pass TCP options.
+
+  ## Mutual TLS
+
+  A server, verifying its clients against one authority and refusing anonymous
+  ones:
+
+      Socket.SSL.listen(5061,
+        cert: [path: "/etc/pki/server.crt"],
+        key: [path: "/etc/pki/server.key"],
+        authorities: [path: "/etc/pki/clients-ca.crt"],
+        verify: :required
+      )
+
+  `verify: true` would not do: it only *requests* a certificate, and a client
+  presenting none completes the handshake all the same. `:required` adds
+  `fail_if_no_peer_cert`. Once connected, `certificate/1` returns the peer's
+  certificate — the identity a server authorizes on.
+
+  A client, presenting its own certificate and trusting one authority:
+
+      Socket.SSL.connect("peer.example", 5061,
+        cert: [path: "/etc/pki/client.crt"],
+        key: [path: "/etc/pki/client.key"],
+        authorities: [path: "/etc/pki/server-ca.crt"]
+      )
+
+  `verify: true` is the default here, and so is checking that the certificate
+  matches the name dialled.
+
+  **Naming an authority replaces the trust store; it does not add to it.** With
+  no `:authorities` and no `:cacerts`, a client trusts the public bundle
+  (`:certifi`). With either, it trusts exactly what was named — `:ssl` lets
+  `cacerts` override `cacertfile` silently, so shipping the bundle alongside a
+  private CA would mean trusting the bundle *instead*. Pass both to trust both.
 
   ## Smart garbage collection
 
@@ -123,11 +164,7 @@ defmodule Socket.SSL do
 
     timeout = options[:timeout] || :infinity
 
-    options =
-      options
-      |> Keyword.delete(:timeout)
-      |> Keyword.put_new_lazy(:cacerts, fn -> :certifi.cacerts() end)
-      |> Keyword.put_new(:verify, true)
+    options = client_defaults(Keyword.delete(options, :timeout))
 
     :ssl.connect(wrap, options, timeout)
   end
@@ -162,11 +199,7 @@ defmodule Socket.SSL do
 
     timeout = options[:timeout] || :infinity
 
-    options =
-      options
-      |> Keyword.delete(:timeout)
-      |> Keyword.put_new_lazy(:cacerts, fn -> :certifi.cacerts() end)
-      |> Keyword.put_new(:verify, true)
+    options = client_defaults(Keyword.delete(options, :timeout))
 
     :ssl.connect(address, port, arguments(options), timeout)
   end
@@ -383,6 +416,7 @@ defmodule Socket.SSL do
         {:dh, _} -> true
         {:cacerts, _} -> true
         {:verify, _} -> true
+        {:hostname_check, _} -> true
         {:password, _} -> true
         {:renegotiation, _} -> true
         {:ciphers, _} -> true
@@ -461,16 +495,39 @@ defmodule Socket.SSL do
           [{:cacerts, certs}]
 
         {:verify, true} ->
-          [{:verify, :verify_peer}, wildcard_fix()]
+          [{:verify, :verify_peer}]
+
+        # Mutual TLS on a SERVER: verifying the peer is not enough on its own.
+        # `verify_peer` alone merely REQUESTS a certificate, and a client that
+        # presents none completes the handshake anyway — an mTLS listener that
+        # accepts anonymous clients is theatre. This is the option that makes it
+        # mandatory, and it is server-only.
+        {:verify, :required} ->
+          [{:verify, :verify_peer}, {:fail_if_no_peer_cert, true}]
 
         {:verify, false} ->
           [{:verify, :verify_none}]
 
         {:verify, [function: fun]} ->
-          [{:verify, :verify_peer}, {:verify_fun, {fun, nil}}, wildcard_fix()]
+          [{:verify, :verify_peer}, {:verify_fun, {fun, nil}}]
 
         {:verify, [function: fun, data: data]} ->
-          [{:verify, :verify_peer}, {:verify_fun, {fun, data}}, wildcard_fix()]
+          [{:verify, :verify_peer}, {:verify_fun, {fun, data}}]
+
+        # Whose name the certificate has to match, and how. CLIENT-ONLY: a server
+        # verifies an identity, it does not check a hostname, and :ssl refuses the
+        # option outright on a listening socket
+        # (`{:option, :client_only, :customize_hostname_check}`). It used to be
+        # emitted by `verify: true` itself, which made a verifying SERVER
+        # inexpressible; `connect/3` now supplies it instead.
+        {:hostname_check, false} ->
+          []
+
+        {:hostname_check, :https} ->
+          [wildcard_fix()]
+
+        {:hostname_check, opts} when is_list(opts) ->
+          [{:customize_hostname_check, opts}]
 
         {:identity, identity} ->
           Enum.flat_map(identity, fn
@@ -577,6 +634,34 @@ defmodule Socket.SSL do
   """
   @spec renegotiate!(t) :: :ok | no_return
   defbang(renegotiate(socket))
+
+  # What a CLIENT gets when it says nothing, in ONE place: two copies of these
+  # three lines existed, and only one of them was ever updated.
+  #
+  # `hostname_check` cannot live in `arguments/1`: that function cannot know which
+  # end of the connection it is building for, and `:ssl` refuses the option on a
+  # listening socket. A server verifies an identity; it does not check a hostname.
+  defp client_defaults(options) do
+    options
+    |> default_trust_store()
+    |> Keyword.put_new(:verify, true)
+    |> Keyword.put_new(:hostname_check, :https)
+  end
+
+  # The public bundle is a DEFAULT, never an addition. `:ssl` takes the UNION of
+  # `cacertfile` and `cacerts`, so shipping the bundle alongside a caller's own CA
+  # keeps trusting every public authority — measured: a peer whose certificate was
+  # signed by a CA the caller never named is accepted, which is any public CA
+  # issuing for the peer's name. Naming a private CA is exactly what mTLS does, and
+  # it has to mean "this one and no other".
+  #
+  # A caller that wants both says so, by passing `authorities` and `cacerts`
+  # together.
+  defp default_trust_store(options) do
+    if Keyword.has_key?(options, :authorities) or Keyword.has_key?(options, :cacerts),
+      do: options,
+      else: Keyword.put_new_lazy(options, :cacerts, fn -> :certifi.cacerts() end)
+  end
 
   defp wildcard_fix do
     # Without this Erlang doesn't accept wildcards SSL certificate alternative names.
