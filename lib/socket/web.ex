@@ -1099,18 +1099,39 @@ defmodule Socket.Web do
     Map.put(self, :target_pid, pid)
   end
 
+  @doc """
+  Start or stop the reader process that turns incoming frames into messages.
+
+  Stopping it kills that process. It is blocked in `recv/2` most of its life
+  and never reaches its mailbox, so nothing else stops it on the spot. Close
+  the socket or arm it again rather than reading it passively afterwards: a
+  frame may have been half read when the reader went away.
+  """
+  @spec active(t, boolean) :: t
   def active(self, true) when is_map(self) do
     if self.active_pid != nil and Process.alive?(self.active_pid) do
       self
     else
-      active_pid = spawn(fn -> active_websocket_process(self) end)
-      Map.put(self, :active_pid, active_pid)
+      # The reader puts its own socket in every message it sends, so it has to
+      # hold the struct that already knows its pid. It waits for that struct
+      # instead of being handed a copy taken before the spawn.
+      active_pid =
+        spawn(fn ->
+          receive do
+            {:socket, socket} -> active_websocket_process(socket)
+          end
+        end)
+
+      self = Map.put(self, :active_pid, active_pid)
+      Kernel.send(active_pid, {:socket, self})
+
+      self
     end
   end
 
   def active(self, false) when is_map(self) do
     if self.active_pid != nil and Process.alive?(self.active_pid) do
-      Process.send(self.active_pid, :stop, [])
+      Process.exit(self.active_pid, :kill)
     end
 
     Map.put(self, :active_pid, nil)
