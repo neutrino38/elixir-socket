@@ -74,6 +74,10 @@ defmodule Socket.Web do
     end
   )
 
+  # RFC 6455 §7.4.2 leaves 3000-4999 to applications and libraries, so a code
+  # outside the registered set is legal on both ends.
+  defp close_code(code) when is_integer(code), do: code
+
   defmacrop known?(n) do
     quote do
       unquote(n) in [0x1, 0x2, 0x8, 0x9, 0xA]

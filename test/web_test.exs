@@ -56,5 +56,23 @@ defmodule WebTest do
       assert Socket.Web.recv!(socket) == {:fragmented, :continuation, "b"}
       assert Socket.Web.recv!(socket) == {:fragmented, :end, "c"}
     end
+
+    test "a close code the application chose is reported, not raised" do
+      {listener, port} = listen()
+      serve(listener, fn client -> Socket.Web.close(client, {4000, "bye"}, wait: false) end)
+
+      socket = Socket.Web.connect!("localhost", port)
+
+      assert Socket.Web.recv!(socket) == {:close, 4000, "bye"}
+    end
+
+    test "a registered close code still arrives as its name" do
+      {listener, port} = listen()
+      serve(listener, fn client -> Socket.Web.close(client, :going_away, wait: false) end)
+
+      socket = Socket.Web.connect!("localhost", port)
+
+      assert Socket.Web.recv!(socket) == {:close, :going_away, ""}
+    end
   end
 end
