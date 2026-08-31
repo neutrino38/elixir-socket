@@ -823,8 +823,8 @@ defmodule Socket.Web do
     <<127::7, byte_size(data)::64>>
   end
 
-  @spec forge(nil | true | integer, binary) :: binary
-  defp forge(nil, data) do
+  @spec forge(nil | boolean | integer, binary) :: binary
+  defp forge(mask, data) when mask in [nil, false] do
     <<0::1, length(data)::bitstring, data::bitstring>>
   end
 
