@@ -199,9 +199,6 @@ defmodule Socket.Web do
 
       e in [Socket.Error] ->
         {:error, e.message}
-
-      e in [Socket.TCP.Error, Socket.SSL.Error] ->
-        {:error, e.code}
     end
   end
 
@@ -450,7 +447,7 @@ defmodule Socket.Web do
         {:error, e.message}
 
       e in [Socket.Error] ->
-        {:error, e.code}
+        {:error, e.message}
     end
   end
 
