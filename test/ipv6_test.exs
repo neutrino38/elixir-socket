@@ -65,4 +65,29 @@ defmodule Socket.IPv6Test do
     assert {:ok, [ipv6_v6only: false]} = :inet.getopts(socket, [:ipv6_v6only])
     :gen_udp.close(socket)
   end
+
+  test "an IPv6 listener can be kept from accepting IPv4" do
+    listener = Socket.TCP.listen!(0, version: 6, v6only: true)
+    assert {:ok, [ipv6_v6only: true]} = :inet.getopts(listener, [:ipv6_v6only])
+    Socket.close(listener)
+
+    listener = Socket.TCP.listen!(0, version: 6, v6only: false)
+    assert {:ok, [ipv6_v6only: false]} = :inet.getopts(listener, [:ipv6_v6only])
+    Socket.close(listener)
+  end
+
+  test "a v6only listener leaves the IPv4 wildcard to a listener of its own family" do
+    v4 = Socket.TCP.listen!(0, local: [address: {0, 0, 0, 0}], version: 4)
+    {_ip, port} = Socket.local!(v4)
+
+    assert {:ok, v6} =
+             Socket.TCP.listen(port,
+               local: [address: {0, 0, 0, 0, 0, 0, 0, 0}],
+               version: 6,
+               v6only: true
+             )
+
+    Socket.close(v6)
+    Socket.close(v4)
+  end
 end
