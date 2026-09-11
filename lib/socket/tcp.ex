@@ -142,7 +142,7 @@ defmodule Socket.TCP do
   Create a TCP socket connecting to the given host and port, raising in case of
   error.
   """
-  @spec connect!(String.t() | :inet.ip_address(), :inet.port_number(), Keyword.t()) ::
+  @spec connect!(Socket.Address.t(), :inet.port_number(), Keyword.t()) ::
           t | no_return
   defbang(connect(address, port, options))
 
