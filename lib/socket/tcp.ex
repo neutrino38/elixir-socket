@@ -26,6 +26,7 @@ defmodule Socket.TCP do
     - `:low` defines the `:low_watermark`, see `inet:setopts`
     - `:high` defines the `:high_watermark`, see `inet:setopts`
   * `:version` sets the IP version to use
+  * `:v6only` keeps an IPv6 socket from also accepting IPv4
   * `:options` must be a list of atoms or tuples:
     - `:keepalive` sets `SO_KEEPALIVE`
     - `:nodelay` sets `TCP_NODELAY`
@@ -307,6 +308,7 @@ defmodule Socket.TCP do
         {:watermark, _} -> true
         {:local, _} -> true
         {:version, _} -> true
+        {:v6only, _} -> true
         {:options, _} -> true
         _ -> false
       end)
@@ -359,6 +361,13 @@ defmodule Socket.TCP do
 
         {:version, 6} ->
           [:inet6]
+
+        # An IPv6 socket that also accepts IPv4 holds the IPv4 wildcard as well,
+        # so a listener of each family cannot share a port; and its IPv4 peers
+        # arrive under `::ffff:a.b.c.d`, which then travels into whatever the
+        # server writes. Only the socket can be told otherwise, before it binds.
+        {:v6only, v6only} ->
+          [{:ipv6_v6only, v6only}]
 
         {:options, options} ->
           Enum.flat_map(options, fn
