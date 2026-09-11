@@ -78,7 +78,9 @@ defmodule Socket.MTLSTest do
       # certificate. fail_if_no_peer_cert is what makes it mandatory.
       _ = Socket.SSL.connect("localhost", port, client_opts(pki, []))
 
-      assert_receive {:server, {:error, _}}, 3_000
+      # The alert names the reason: a refusal for any other cause would mean the
+      # option under test is not the one doing the work.
+      assert_receive {:server, {:error, {:tls_alert, {:certificate_required, _}}}}, 3_000
       Socket.close(listener)
     end
 
@@ -92,7 +94,9 @@ defmodule Socket.MTLSTest do
           client_opts(pki, cert: [path: pki.rogue_cert], key: [path: pki.rogue_key])
         )
 
-      assert_receive {:server, {:error, _}}, 3_000
+      # Refused on the signature, not for want of a certificate: the client did
+      # present one.
+      assert_receive {:server, {:error, {:tls_alert, {:bad_certificate, _}}}}, 3_000
       Socket.close(listener)
     end
   end
@@ -144,7 +148,10 @@ defmodule Socket.MTLSTest do
              do: Socket.SSL.handshake(a, timeout: 2_000)
       end)
 
-      assert {:error, _} = Socket.SSL.connect("localhost", port, client_opts(pki, []))
+      # unknown_ca is the whole assertion: the named authority did not sign this
+      # server, and no public one was kept alongside it to make up for that.
+      assert {:error, {:tls_alert, {:unknown_ca, _}}} =
+               Socket.SSL.connect("localhost", port, client_opts(pki, []))
 
       Socket.close(listener)
     end
