@@ -125,17 +125,27 @@ end
 ### Active websockets
 
 Now WebSocket also supports an active mode when you can receive data as Erlang messages. It also handles keepalive automatically.
-Data is received as `{ :web, socket, data }` messages and socket disconnection notification as : `{ web_closed, socket }`
+Data is received as `{ :web, socket, data }` messages and socket disconnection notification as : `{ :web_closed, socket, reason }`
 
 In order to use this function, pass the `mode: active` option. You can also specify the PID of the process receiving the messages using the `process: <pid>` option.
 ```elixir
 socket = Socket.Web.connect!("echo.websocket.org", [ mode: :active, process: self() ] )
-Socket.Web.Send(socket, "Hello")
+Socket.Web.send!(socket, { :text, "Hello" })
 receive do
    { :web, _socket, data } -> IO.puts("Received: " <> data)
-   { :web_closed, _socket } -> IO.puts("Active Web socket has closed.")
+   { :web_closed, _socket, reason } -> IO.puts("Active Web socket has closed: #{inspect(reason)}")
 end
 ```
+
+### Message size limit
+
+The `max_size` option bounds, in bytes, what the peer may send in one message. It is checked against the length the peer announces, before the payload is read. It can be given to `connect!`, to `listen!` (every accepted client inherits it), to `accept!`, or to a single `recv` call.
+
+```elixir
+socket = Socket.Web.connect!("echo.websocket.org", max_size: 1_048_576)
+```
+
+A message over the limit fails the connection: the peer is sent a close frame with status 1009, the socket is closed, and `recv` returns `{:error, :message_too_big}`. In active mode the owner receives `{ :web_closed, socket, :message_too_big }` instead, and the limit binds the whole reassembled message, fragments included.
 
 ### Server
 

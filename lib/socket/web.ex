@@ -107,7 +107,10 @@ defmodule Socket.Web do
             mask: false,
             active_pid: nil,
             target_pid: nil,
-            headers: %{}
+            headers: %{},
+            max_size: :infinity
+
+  @type max_size :: non_neg_integer | :infinity
 
   @type t :: %Socket.Web{
           socket: term,
@@ -119,8 +122,27 @@ defmodule Socket.Web do
           key: String.t(),
           mask: boolean,
           active_pid: pid(),
-          target_pid: pid()
+          target_pid: pid(),
+          max_size: max_size
         }
+
+  @spec max_size(Keyword.t(), max_size) :: max_size
+  defp max_size(options, default) do
+    case Keyword.get(options, :max_size, default) do
+      :infinity ->
+        :infinity
+
+      size when is_integer(size) and size >= 0 ->
+        size
+
+      other ->
+        raise ArgumentError,
+              "max_size must be a non-negative integer or :infinity, got: #{inspect(other)}"
+    end
+  end
+
+  defp within?(_size, :infinity), do: true
+  defp within?(size, max_size), do: size <= max_size
 
   @spec headers(%{String.t() => String.t()}, Socket.t(), Keyword.t()) :: %{
           String.t() => String.t()
@@ -154,8 +176,9 @@ defmodule Socket.Web do
   # binary frames, the fragmented sequence of §5.4, pongs, and every close code,
   # not only the abnormal one.
   #
-  # `fragments` accumulates the payload of a fragmented message, in reverse.
-  defp active_websocket_process(self, fragments \\ []) do
+  # `fragments` accumulates the payload of a fragmented message, in reverse, and
+  # `size` is its byte count so far: the limit binds the message, not the frame.
+  defp active_websocket_process(self, fragments \\ [], size \\ 0) do
     case recv(self) do
       # ---- unfragmented data ------------------------------------------------
       {:ok, {:text, data}} ->
@@ -170,37 +193,60 @@ defmodule Socket.Web do
       # The final frame is delivered as one message: the owner of a %Socket.Web{}
       # is handed messages, not frames.
       {:ok, {:fragmented, :end, data}} ->
-        notify(self, {:web, self, IO.iodata_to_binary(Enum.reverse([data | fragments]))})
-        active_websocket_process(self)
+        gather(self, [data | fragments], size + byte_size(data), true)
 
       {:ok, {:fragmented, :continuation, data}} ->
-        active_websocket_process(self, [data | fragments])
+        gather(self, [data | fragments], size + byte_size(data), false)
 
       # First frame of a fragmented message (opcode :text or :binary).
       {:ok, {:fragmented, _opcode, data}} ->
-        active_websocket_process(self, [data])
+        gather(self, [data], byte_size(data), false)
 
       # ---- control frames ---------------------------------------------------
       # §5.5.3: the pong MUST carry the application data of the ping it answers.
       # Answering with an empty payload makes a peer that matches its own cookie
       # (Kamailio's websocket keep-alive does) conclude the connection is dead.
       {:ok, {:ping, cookie}} ->
-        send!(self, {:pong, cookie})
-        active_websocket_process(self, fragments)
+        case send(self, {:pong, cookie}) do
+          :ok -> active_websocket_process(self, fragments, size)
+          {:error, reason} -> closed(self, reason)
+        end
 
       {:ok, {:pong, cookie}} ->
         notify(self, {:web_pong, self, cookie})
-        active_websocket_process(self, fragments)
+        active_websocket_process(self, fragments, size)
 
+      # §5.5.1: a close frame is answered with one, then the transport goes.
+      # 1006 is not a frame the peer sent: the transport is already gone.
       {:ok, :close} ->
+        drop(self, :normal)
         closed(self, :normal)
 
+      {:ok, {:close, :abnormal, nil}} ->
+        closed(self, :abnormal)
+
       {:ok, {:close, reason, _data}} ->
+        drop(self, reason)
         closed(self, reason)
 
-      # ---- transport error --------------------------------------------------
+      # ---- transport error, or a peer failure recv/2 already answered --------
       {:error, reason} ->
         closed(self, reason)
+    end
+  end
+
+  defp gather(self, fragments, size, final?) do
+    cond do
+      not within?(size, self.max_size) ->
+        drop(self, :message_too_big)
+        closed(self, :message_too_big)
+
+      final? ->
+        notify(self, {:web, self, IO.iodata_to_binary(Enum.reverse(fragments))})
+        active_websocket_process(self)
+
+      true ->
+        active_websocket_process(self, fragments, size)
     end
   end
 
@@ -212,6 +258,20 @@ defmodule Socket.Web do
   defp closed(self, reason) do
     notify(self, {:web_closed, self, reason})
     nil
+  end
+
+  # RFC 6455 §7.1.7: tell the peer why, then drop the transport. The read side
+  # may be out of step with the frame boundaries, so nothing more can be read.
+  @peer_failures [:protocol_error, :invalid_payload, :message_too_big]
+
+  defp fail(self, reason) do
+    drop(self, reason)
+    {:error, reason}
+  end
+
+  defp drop(self, reason) do
+    close(self, reason, wait: false)
+    abort(self)
   end
 
   @doc """
@@ -320,6 +380,7 @@ defmodule Socket.Web do
   `:origin` sets the Origin header, this is optional
   `:handshake` is the key used for the handshake, this is optional
   `:headers` are additional headers that will be sent
+  `:max_size` bounds the payload accepted from the peer, in bytes, see `recv/2`
 
   You can also pass TCP or SSL options, depending if you're using secure
   websockets or not.
@@ -403,7 +464,8 @@ defmodule Socket.Web do
       path: path,
       origin: origin,
       key: handshake,
-      mask: true
+      mask: true,
+      max_size: max_size(local, :infinity)
     }
 
     if local[:mode] == :active do
@@ -450,6 +512,8 @@ defmodule Socket.Web do
   ## Options
 
   `:secure` when true it will use SSL sockets
+  `:max_size` bounds the payload accepted from every client this listener
+  accepts, in bytes, see `recv/2`
 
   You can also pass TCP or SSL options, depending if you're using secure
   websockets or not.
@@ -467,7 +531,7 @@ defmodule Socket.Web do
 
     case mod.listen(port, global) do
       {:ok, socket} ->
-        {:ok, %W{socket: socket}}
+        {:ok, %W{socket: socket, max_size: max_size(local, :infinity)}}
 
       {:error, reason} ->
         {:error, reason}
@@ -505,6 +569,8 @@ defmodule Socket.Web do
   ## Options
 
   `:secure` when true it will use SSL sockets
+  `:max_size` bounds the payload accepted from every client this listener
+  accepts, in bytes, see `recv/2`
 
   You can also pass TCP or SSL options, depending if you're using secure
   websockets or not.
@@ -520,7 +586,7 @@ defmodule Socket.Web do
         Socket.TCP
       end
 
-    %W{socket: mod.listen!(port, global)}
+    %W{socket: mod.listen!(port, global), max_size: max_size(local, :infinity)}
   end
 
   @doc """
@@ -555,12 +621,15 @@ defmodule Socket.Web do
   handshake, this separation is done because then you can verify the client can
   connect based on Origin header, path and other things.
 
+  `:max_size` bounds the payload accepted from this client, in bytes, see
+  `recv/2`. Without it the client inherits the listener's.
+
   In case of error, it raises.
   """
   @spec accept!(t, Keyword.t()) :: t | no_return
   def accept!(socket, options \\ [])
 
-  def accept!(%W{socket: socket, key: nil}, options) do
+  def accept!(%W{socket: socket, key: nil, max_size: inherited}, options) do
     {local, global} = arguments(options)
 
     client = socket |> Socket.accept!(global)
@@ -606,11 +675,12 @@ defmodule Socket.Web do
       key: headers["sec-websocket-key"],
       protocols: protocols,
       extensions: extensions,
-      headers: headers
+      headers: headers,
+      max_size: max_size(local, inherited)
     }
   end
 
-  def accept!(%W{socket: socket, key: key}, options) do
+  def accept!(%W{socket: socket, key: key} = self, options) do
     {local, _} = arguments(options)
 
     extensions = local[:extensions]
@@ -638,7 +708,7 @@ defmodule Socket.Web do
       "\r\n"
     ])
 
-    socket
+    %W{self | max_size: max_size(local, self.max_size)}
   end
 
   @doc """
@@ -656,6 +726,7 @@ defmodule Socket.Web do
         {:handshake, _} -> true
         {:headers, _} -> true
         {:process, _} -> true
+        {:max_size, _} -> true
         # active websocket will be reimplemented
         {:mode, _} -> true
         _ -> false
@@ -743,74 +814,62 @@ defmodule Socket.Web do
     acc
   end
 
-  @spec recv(t, boolean, non_neg_integer, Keyword.t()) :: {:ok, binary} | {:error, error}
-  defp recv(%W{socket: socket, version: 13}, mask, length, options) do
-    length =
-      cond do
-        length == 127 ->
-          case socket |> Socket.Stream.recv(8, options) do
-            {:ok, <<length::64>>} ->
-              length
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-
-        length == 126 ->
-          case socket |> Socket.Stream.recv(2, options) do
-            {:ok, <<length::16>>} ->
-              length
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-
-        length <= 125 ->
-          length
-      end
-
-    case length do
-      {:error, reason} ->
-        {:error, reason}
-
-      length ->
-        if mask do
-          case socket |> Socket.Stream.recv(4, options) do
-            {:ok, <<key::32>>} ->
-              if length > 0 do
-                case socket |> Socket.Stream.recv(length, options) do
-                  {:ok, data} ->
-                    {:ok, unmask(key, data)}
-
-                  {:error, reason} ->
-                    {:error, reason}
-                end
-              else
-                {:ok, ""}
-              end
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-        else
-          if length > 0 do
-            case socket |> Socket.Stream.recv(length, options) do
-              {:ok, data} ->
-                {:ok, data}
-
-              {:error, reason} ->
-                {:error, reason}
-            end
-          else
-            {:ok, ""}
-          end
-        end
+  # The payload of a frame whose first two bytes have been read. The announced
+  # length is checked against `max_size` before a single byte of payload is
+  # asked for, so an oversized announcement costs nothing.
+  @spec payload(t, boolean, 0..127, max_size, Keyword.t()) :: {:ok, binary} | {:error, error}
+  defp payload(%W{socket: socket, version: 13}, masked?, length, max_size, options) do
+    with {:ok, length} <- payload_length(socket, length, options),
+         {:ok, length} <- bounded(length, max_size) do
+      unmasked(socket, masked?, length, options)
     end
   end
 
-  defmacrop on_success(result, options) do
+  # RFC 6455 §5.2: the most significant bit of a 64-bit length MUST be 0.
+  defp payload_length(socket, 127, options) do
+    case read(socket, 8, options) do
+      {:ok, <<0::1, length::63>>} -> {:ok, length}
+      {:ok, _} -> {:error, :protocol_error}
+      error -> error
+    end
+  end
+
+  defp payload_length(socket, 126, options) do
+    case read(socket, 2, options) do
+      {:ok, <<length::16>>} -> {:ok, length}
+      error -> error
+    end
+  end
+
+  defp payload_length(_socket, length, _options), do: {:ok, length}
+
+  defp bounded(length, max_size) do
+    if within?(length, max_size), do: {:ok, length}, else: {:error, :message_too_big}
+  end
+
+  defp unmasked(socket, false, length, options), do: read(socket, length, options)
+
+  defp unmasked(socket, true, length, options) do
+    with {:ok, <<key::32>>} <- read(socket, 4, options),
+         {:ok, data} <- read(socket, length, options) do
+      {:ok, unmask(key, data)}
+    end
+  end
+
+  # Exactly `n` bytes, or an error. `Socket.Stream.recv/3` turns a peer that
+  # went away into `{:ok, nil}`; inside a frame that is a truncated frame.
+  defp read(_socket, 0, _options), do: {:ok, <<>>}
+
+  defp read(socket, n, options) do
+    case Socket.Stream.recv(socket, n, options) do
+      {:ok, nil} -> {:error, :closed}
+      other -> other
+    end
+  end
+
+  defmacrop on_success(result, max_size, options) do
     quote do
-      case recv(var!(self), var!(mask) == 1, var!(length), unquote(options)) do
+      case payload(var!(self), var!(mask) == 1, var!(length), unquote(max_size), unquote(options)) do
         {:ok, var!(data)} ->
           {:ok, unquote(result)}
 
@@ -820,17 +879,57 @@ defmodule Socket.Web do
     end
   end
 
+  # RFC 6455 §5.5.1: a close payload is empty or starts with a 2-byte code.
+  defp control(:ping, data), do: {:ok, {:ping, data}}
+  defp control(:pong, data), do: {:ok, {:pong, data}}
+  defp control(:close, <<>>), do: {:ok, :close}
+  defp control(:close, <<code::16, rest::binary>>), do: {:ok, {:close, close_code(code), rest}}
+  defp control(:close, _), do: {:error, :protocol_error}
+
   @doc """
   Receive a packet from the websocket.
+
+  ## Options
+
+  `:timeout` bounds the wait, in milliseconds, `:infinity` by default
+  `:max_size` bounds the payload of the frame, in bytes; it overrides the
+  `:max_size` the socket was opened with, `:infinity` by default
+
+  The limit is checked against the length the peer announces, before any of
+  the payload is read.
+
+  A frame over the limit, a malformed one, or text that is not UTF-8 fails
+  the connection (RFC 6455 §7.1.7): the peer is sent a close frame with the
+  matching status code, 1009, 1002 or 1007, the transport is closed, and the
+  call returns `{:error, :message_too_big}`, `{:error, :protocol_error}` or
+  `{:error, :invalid_payload}`.
+
+  In passive mode the limit binds each frame. A caller that reassembles a
+  fragmented message has to bound the sum. In active mode the reader does,
+  and a message over the limit fails the connection the same way.
   """
   @spec recv(t, Keyword.t()) :: {:ok, packet} | {:error, error}
   def recv(self, options \\ [])
 
-  def recv(%W{socket: socket, version: 13} = self, options) do
+  def recv(%W{version: 13} = self, options) do
+    case frame(self, options) do
+      {:error, reason} when reason in @peer_failures -> fail(self, reason)
+      other -> other
+    end
+  end
+
+  defp frame(%W{socket: socket} = self, options) do
+    max_size = max_size(options, self.max_size)
+    # §5.1: a client masks every frame, a server none.
+    masked = if self.mask, do: 0, else: 1
+
     case socket |> Socket.Stream.recv(2, options) do
+      {:ok, <<_::8, mask::1, _::7>>} when mask != masked ->
+        {:error, :protocol_error}
+
       # a non fragmented message packet
       {:ok, <<1::1, 0::3, opcode::4, mask::1, length::7>>} when known?(opcode) and data?(opcode) ->
-        case on_success({opcode(opcode), data}, options) do
+        case on_success({opcode(opcode), data}, max_size, options) do
           {:ok, {:text, data}} = result ->
             if String.valid?(data) do
               result
@@ -840,41 +939,31 @@ defmodule Socket.Web do
 
           {:ok, {:binary, _}} = result ->
             result
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       # beginning of a fragmented packet
       {:ok, <<0::1, 0::3, opcode::4, mask::1, length::7>>}
       when known?(opcode) and not control?(opcode) ->
-        {:fragmented, opcode(opcode), data} |> on_success(options)
+        {:fragmented, opcode(opcode), data} |> on_success(max_size, options)
 
       # a fragmented continuation
       {:ok, <<0::1, 0::3, 0::4, mask::1, length::7>>} ->
-        {:fragmented, :continuation, data} |> on_success(options)
+        {:fragmented, :continuation, data} |> on_success(max_size, options)
 
       # final fragmented packet
       {:ok, <<1::1, 0::3, 0::4, mask::1, length::7>>} ->
-        {:fragmented, :end, data} |> on_success(options)
+        {:fragmented, :end, data} |> on_success(max_size, options)
 
-      # control packet
+      # control packet, RFC 6455 §5.5: at most 125 bytes, never fragmented
       {:ok, <<1::1, 0::3, opcode::4, mask::1, length::7>>}
-      when known?(opcode) and control?(opcode) ->
-        case opcode(opcode) do
-          :ping ->
-            {:ping, data}
-
-          :pong ->
-            {:pong, data}
-
-          :close ->
-            case data do
-              <<>> ->
-                :close
-
-              <<code::16, rest::binary>> ->
-                {:close, close_code(code), rest}
-            end
+      when known?(opcode) and control?(opcode) and length <= 125 ->
+        case payload(self, mask == 1, length, :infinity, options) do
+          {:ok, data} -> control(opcode(opcode), data)
+          error -> error
         end
-        |> on_success(options)
 
       {:ok, nil} ->
         # 1006 is reserved for connection closed with no close frame
@@ -911,7 +1000,7 @@ defmodule Socket.Web do
     <<byte_size(data)::7>>
   end
 
-  defp length(data) when byte_size(data) <= 65_536 do
+  defp length(data) when byte_size(data) <= 65_535 do
     <<126::7, byte_size(data)::16>>
   end
 
@@ -1077,8 +1166,9 @@ defmodule Socket.Web do
     {:ok, reason, data}
   end
 
-  defp do_close(self, {:ok, {:error, _}}, _, _) do
+  defp do_close(self, {:error, reason}, _, _) do
     abort(self)
+    {:error, reason}
   end
 
   defp do_close(self, _, reason?, options) do
