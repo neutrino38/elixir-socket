@@ -144,22 +144,98 @@ defmodule Socket.Web do
   defp within?(_size, :infinity), do: true
   defp within?(size, max_size), do: size <= max_size
 
-  @spec headers(%{String.t() => String.t()}, Socket.t(), Keyword.t()) :: %{
-          String.t() => String.t()
-        }
-  defp headers(acc, socket, options) do
-    case socket |> Socket.Stream.recv!(options) do
-      {:http_header, _, name, _, value} when name |> is_atom ->
-        acc
-        |> Map.put(Atom.to_string(name) |> String.downcase(), value)
-        |> headers(socket, options)
+  # What a handshake may carry: header lines up to 8 KiB, the bound nginx and
+  # Apache apply, and at most 100 of them. Without an explicit line size inet
+  # refuses any line longer than its receive buffer, about 1.4 KiB, which a
+  # cookie or a bearer token exceeds.
+  @max_line 8192
+  @max_headers 100
 
-      {:http_header, _, name, _, value} when name |> is_binary ->
-        acc |> Map.put(String.downcase(name), value) |> headers(socket, options)
+  @spec headers(%{String.t() => String.t()}, Socket.t(), Keyword.t(), non_neg_integer) ::
+          {:ok, %{String.t() => String.t()}} | {:error, term}
+  defp headers(acc, socket, options, count \\ 0)
 
-      :http_eoh ->
-        acc
+  defp headers(_acc, _socket, _options, count) when count >= @max_headers do
+    {:error, :too_many_headers}
+  end
+
+  defp headers(acc, socket, options, count) do
+    case socket |> Socket.Stream.recv(options) do
+      {:ok, {:http_header, _, name, _, value}} ->
+        name = if is_atom(name), do: Atom.to_string(name), else: name
+        acc |> Map.put(String.downcase(name), value) |> headers(socket, options, count + 1)
+
+      {:ok, :http_eoh} ->
+        {:ok, acc}
+
+      {:ok, _} ->
+        {:error, :malformed}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp headers!(socket, options) do
+    case headers(%{}, socket, options) do
+      {:ok, headers} -> headers
+      {:error, :too_many_headers} -> raise RuntimeError, message: "too many headers"
+      {:error, :malformed} -> raise RuntimeError, message: "malformed handshake"
+      {:error, reason} -> raise Socket.Error, reason: reason
+    end
+  end
+
+  # RFC 6455 §4.2.1: 16 random bytes, in base64.
+  defp key?(key) do
+    match?({:ok, <<_::128>>}, Base.decode64(key))
+  end
+
+  defp http_mode!(socket), do: Socket.TCP.options!(socket, packet: :http_bin, size: @max_line)
+  defp raw_mode!(socket), do: Socket.TCP.options!(socket, packet: :raw, size: 0)
+
+  # RFC 7230 §6.7: `Connection` lists tokens, and `Upgrade` is one of them.
+  defp upgrade?(headers) do
+    String.downcase(headers["upgrade"] || "") == "websocket" and
+      "upgrade" in tokens(headers["connection"])
+  end
+
+  defp tokens(nil), do: []
+
+  defp tokens(value),
+    do: value |> String.downcase() |> String.split(",") |> Enum.map(&String.trim/1)
+
+  # A CR or LF inside a value written on the request line or in a header would
+  # end that line and start another: header injection.
+  defp clean!(nil), do: nil
+
+  defp clean!(value) do
+    if value |> to_string() |> String.contains?(["\r", "\n"]) do
+      raise ArgumentError, "a handshake value cannot contain CR or LF: #{inspect(value)}"
+    end
+
+    value
+  end
+
+  # RFC 6455 §4.2.2: a request the server turns down gets an HTTP status.
+  defp reject!(socket, status, message, headers \\ []) do
+    socket
+    |> Socket.Stream.send([
+      "HTTP/1.1 #{status}\r\n",
+      headers,
+      "Connection: close\r\nContent-Length: 0\r\n\r\n"
+    ])
+
+    raise RuntimeError, message: message
+  end
+
+  # A handshake that fails half-way must not leave its socket behind: the
+  # process that accepts or connects usually lives on.
+  defp closing_on_error(socket, fun) do
+    fun.()
+  rescue
+    e ->
+      Socket.close(socket)
+      reraise e, __STACKTRACE__
   end
 
   @spec key(String.t()) :: String.t()
@@ -381,6 +457,11 @@ defmodule Socket.Web do
   `:handshake` is the key used for the handshake, this is optional
   `:headers` are additional headers that will be sent
   `:max_size` bounds the payload accepted from the peer, in bytes, see `recv/2`
+  `:timeout` bounds the connection and each step of the handshake, in
+  milliseconds
+
+  A value that carries a CR or LF is refused with `ArgumentError`. The
+  server's answer may carry at most 100 header lines of 8 KiB each.
 
   You can also pass TCP or SSL options, depending if you're using secure
   websockets or not.
@@ -396,77 +477,75 @@ defmodule Socket.Web do
         Socket.TCP
       end
 
-    path = local[:path] || "/"
-    origin = local[:origin]
-    protocols = local[:protocol]
-    extensions = local[:extensions]
+    path = clean!(local[:path] || "/")
+    origin = clean!(local[:origin])
+    protocols = clean!(local[:protocol])
+    extensions = clean!(local[:extensions])
     handshake = :base64.encode(local[:handshake] || "fork the dongles")
-    headers = Enum.map(local[:headers] || %{}, fn {k, v} -> ["#{k}: #{v}", "\r\n"] end)
+    headers = Enum.map(local[:headers] || %{}, fn {k, v} -> [clean!("#{k}: #{v}"), "\r\n"] end)
+    max_size = max_size(local, :infinity)
 
     client = mod.connect!(address, port, global)
-    client |> Socket.packet!(:raw)
 
-    client
-    |> Socket.Stream.send!([
-      "GET #{path} HTTP/1.1",
-      "\r\n",
-      headers,
-      "Host: #{Socket.Address.to_uri_host(address)}:#{port}",
-      "\r\n",
-      if(origin, do: ["Origin: #{origin}", "\r\n"], else: []),
-      "Upgrade: websocket",
-      "\r\n",
-      "Connection: Upgrade",
-      "\r\n",
-      "Sec-WebSocket-Key: #{handshake}",
-      "\r\n",
-      if(protocols,
-        do: ["Sec-WebSocket-Protocol: #{Enum.join(protocols, ", ")}", "\r\n"],
-        else: []
-      ),
-      if(extensions,
-        do: ["Sec-WebSocket-Extensions: #{Enum.join(extensions, ", ")}", "\r\n"],
-        else: []
-      ),
-      "Sec-WebSocket-Version: 13",
-      "\r\n",
-      "\r\n"
-    ])
+    self =
+      closing_on_error(client, fn ->
+        client |> raw_mode!()
 
-    client |> Socket.packet(:http_bin)
-    {:http_response, _, 101, _} = client |> Socket.Stream.recv!(global)
-    headers = headers(%{}, client, local)
+        client
+        |> Socket.Stream.send!([
+          "GET #{path} HTTP/1.1",
+          "\r\n",
+          headers,
+          "Host: #{Socket.Address.to_uri_host(address)}:#{port}",
+          "\r\n",
+          if(origin, do: ["Origin: #{origin}", "\r\n"], else: []),
+          "Upgrade: websocket",
+          "\r\n",
+          "Connection: Upgrade",
+          "\r\n",
+          "Sec-WebSocket-Key: #{handshake}",
+          "\r\n",
+          if(protocols,
+            do: ["Sec-WebSocket-Protocol: #{Enum.join(protocols, ", ")}", "\r\n"],
+            else: []
+          ),
+          if(extensions,
+            do: ["Sec-WebSocket-Extensions: #{Enum.join(extensions, ", ")}", "\r\n"],
+            else: []
+          ),
+          "Sec-WebSocket-Version: 13",
+          "\r\n",
+          "\r\n"
+        ])
 
-    if String.downcase(headers["upgrade"] || "") != "websocket" or
-         String.downcase(headers["connection"] || "") != "upgrade" do
-      client |> Socket.close()
+        client |> http_mode!()
+        {:http_response, _, 101, _} = client |> Socket.Stream.recv!(global)
+        headers = headers!(client, global)
 
-      raise RuntimeError, message: "malformed upgrade response"
-    end
+        unless upgrade?(headers) do
+          raise RuntimeError, message: "malformed upgrade response"
+        end
 
-    if headers["sec-websocket-version"] && headers["sec-websocket-version"] != "13" do
-      client |> Socket.close()
+        if headers["sec-websocket-version"] && headers["sec-websocket-version"] != "13" do
+          raise RuntimeError, message: "unsupported version"
+        end
 
-      raise RuntimeError, message: "unsupported version"
-    end
+        if headers["sec-websocket-accept"] != key(handshake) do
+          raise RuntimeError, message: "wrong key response"
+        end
 
-    if !headers["sec-websocket-accept"] or headers["sec-websocket-accept"] != key(handshake) do
-      client |> Socket.close()
+        client |> raw_mode!()
 
-      raise RuntimeError, message: "wrong key response"
-    end
-
-    client |> Socket.packet!(:raw)
-
-    self = %Socket.Web{
-      socket: client,
-      version: 13,
-      path: path,
-      origin: origin,
-      key: handshake,
-      mask: true,
-      max_size: max_size(local, :infinity)
-    }
+        %Socket.Web{
+          socket: client,
+          version: 13,
+          path: path,
+          origin: origin,
+          key: handshake,
+          mask: true,
+          max_size: max_size
+        }
+      end)
 
     if local[:mode] == :active do
       target_pid =
@@ -623,6 +702,13 @@ defmodule Socket.Web do
 
   `:max_size` bounds the payload accepted from this client, in bytes, see
   `recv/2`. Without it the client inherits the listener's.
+  `:timeout` bounds each step of the handshake, in milliseconds
+
+  A request that is not a websocket upgrade is answered with a 400, one that
+  asks for another protocol version with a 426, one with more than 100 header
+  lines with a 431, and its socket is closed. A line over 8 KiB closes the
+  socket without a status: the transport refuses it before anything can be
+  sent back.
 
   In case of error, it raises.
   """
@@ -632,59 +718,100 @@ defmodule Socket.Web do
   def accept!(%W{socket: socket, key: nil, max_size: inherited}, options) do
     {local, global} = arguments(options)
 
+    max_size = max_size(local, inherited)
     client = socket |> Socket.accept!(global)
-    client |> Socket.packet!(:http_bin)
 
-    path =
-      case client |> Socket.Stream.recv!(global) do
-        {:http_request, :GET, {:abs_path, path}, _} ->
-          path
+    closing_on_error(client, fn ->
+      client |> http_mode!()
+
+      # RFC 6455 §4.2.1: a GET, over HTTP/1.1 or higher.
+      path =
+        case client |> Socket.Stream.recv(global) do
+          {:ok, {:http_request, :GET, {:abs_path, path}, {1, minor}}} when minor >= 1 ->
+            path
+
+          {:ok, _} ->
+            reject!(client, "400 Bad Request", "malformed upgrade request")
+
+          # On a line over @max_line, inet has dropped the connection already:
+          # no status can follow.
+          {:error, :emsgsize} ->
+            raise RuntimeError, message: "request line too long"
+
+          {:error, reason} ->
+            raise Socket.Error, reason: reason
+        end
+
+      headers =
+        case headers(%{}, client, global) do
+          {:ok, headers} ->
+            headers
+
+          {:error, :too_many_headers} ->
+            reject!(client, "431 Request Header Fields Too Large", "too many headers")
+
+          {:error, :emsgsize} ->
+            raise RuntimeError, message: "header line too long"
+
+          {:error, :malformed} ->
+            reject!(client, "400 Bad Request", "malformed handshake")
+
+          {:error, reason} ->
+            raise Socket.Error, reason: reason
+        end
+
+      unless upgrade?(headers) do
+        reject!(client, "400 Bad Request", "malformed upgrade request")
       end
 
-    headers = headers(%{}, client, local)
-
-    if headers["upgrade"] != "websocket" and headers["connection"] != "Upgrade" do
-      client |> Socket.close()
-
-      raise RuntimeError, message: "malformed upgrade request"
-    end
-
-    unless headers["sec-websocket-key"] do
-      client |> Socket.close()
-
-      raise RuntimeError, message: "missing key"
-    end
-
-    protocols =
-      if p = headers["sec-websocket-protocol"] do
-        String.split(p, ~r/\s*,\s*/)
+      unless headers["sec-websocket-key"] do
+        reject!(client, "400 Bad Request", "missing key")
       end
 
-    extensions =
-      if e = headers["sec-websocket-extensions"] do
-        String.split(e, ~r/\s*,\s*/)
+      unless key?(headers["sec-websocket-key"]) do
+        reject!(client, "400 Bad Request", "invalid key")
       end
 
-    client |> Socket.packet!(:raw)
+      unless headers["sec-websocket-version"] == "13" do
+        reject!(
+          client,
+          "426 Upgrade Required",
+          "unsupported version",
+          "Sec-WebSocket-Version: 13\r\n"
+        )
+      end
 
-    %Socket.Web{
-      socket: client,
-      origin: headers["origin"],
-      path: path,
-      version: 13,
-      key: headers["sec-websocket-key"],
-      protocols: protocols,
-      extensions: extensions,
-      headers: headers,
-      max_size: max_size(local, inherited)
-    }
+      protocols =
+        if p = headers["sec-websocket-protocol"] do
+          String.split(p, ~r/\s*,\s*/)
+        end
+
+      extensions =
+        if e = headers["sec-websocket-extensions"] do
+          String.split(e, ~r/\s*,\s*/)
+        end
+
+      client |> raw_mode!()
+
+      %Socket.Web{
+        socket: client,
+        origin: headers["origin"],
+        path: path,
+        version: 13,
+        key: headers["sec-websocket-key"],
+        protocols: protocols,
+        extensions: extensions,
+        headers: headers,
+        max_size: max_size
+      }
+    end)
   end
 
   def accept!(%W{socket: socket, key: key} = self, options) do
     {local, _} = arguments(options)
 
-    extensions = local[:extensions]
-    protocol = local[:protocol]
+    extensions = clean!(local[:extensions])
+    protocol = clean!(local[:protocol])
 
     socket |> Socket.packet!(:raw)
 

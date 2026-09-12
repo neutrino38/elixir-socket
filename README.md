@@ -161,3 +161,5 @@ client |> Socket.Web.accept!()
 # echo the first message
 client |> Socket.Web.send!(client |> Socket.Web.recv!())
 ```
+
+`accept!` answers a request that is not a websocket upgrade with a 400, one that asks for another protocol version with a 426, and one with more than 100 header lines with a 431, then closes the socket. A header line over 8 KiB closes the socket without a status. A `timeout` option bounds each step of the handshake.
