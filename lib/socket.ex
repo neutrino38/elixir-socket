@@ -19,6 +19,9 @@ defmodule Socket do
     def exception(reason: reason) do
       message =
         case reason do
+          :timeout ->
+            "timeout"
+
           r when is_atom(r) ->
             cond do
               msg = Socket.TCP.error(reason) ->

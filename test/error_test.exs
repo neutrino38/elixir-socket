@@ -2,6 +2,10 @@ defmodule Socket.ErrorTest do
   use ExUnit.Case, async: true
 
   describe "exception/1" do
+    test "formats a timeout" do
+      assert Socket.Error.exception(reason: :timeout).message == "timeout"
+    end
+
     test "formats known TCP errors" do
       error = Socket.Error.exception(reason: :econnrefused)
       assert error.message == "connection refused"
