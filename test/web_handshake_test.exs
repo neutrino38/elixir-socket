@@ -119,8 +119,7 @@ defmodule Socket.WebHandshakeTest do
       {listener, port} = listen()
       ref = accepting(listener)
 
-      client =
-        raw_client(port, String.replace(@request, "Sec-WebSocket-Version: 13\r\n", ""))
+      client = raw_client(port, String.replace(@request, "Sec-WebSocket-Version: 13\r\n", ""))
 
       assert verdict(ref) == {:error, "unsupported version"}
       reply = response(client)
