@@ -5,12 +5,14 @@ jobs:
   test:
     runs-on: ubuntu-22.04
     name: OTP ${{ matrix.otp }} / Elixir ${{ matrix.elixir }}
+    env:
+      MIX_ENV: test
     strategy:
       matrix:
         otp: ["24.x"]
         elixir: ["1.12.3", "1.13.3", "1.14.3", "1.15.3"]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
 
       - uses: erlef/setup-elixir@v1
         name: Setup elixir
